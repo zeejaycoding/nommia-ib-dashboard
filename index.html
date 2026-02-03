@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nommia IB Dashboard</title>
+    
+    <!-- Load Autobahn from a reliable CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/autobahn/20.9.2/autobahn.min.js"></script>
+    
+    <script>
+      // Polyfills for older libraries
+      window.global = window;
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

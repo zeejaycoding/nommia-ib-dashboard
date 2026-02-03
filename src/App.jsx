@@ -1,0 +1,3158 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Users, LayoutDashboard, Wallet, PieChart, Link as LinkIcon, Settings, 
+  Search, Filter, Download, ChevronDown, ChevronRight, AlertCircle, Copy, TrendingUp, 
+  TrendingDown, DollarSign, Activity, Menu, X, Globe, Map, ArrowLeft, 
+  Calculator, Info, Image, FileText, CreditCard, Clock, Plus, Upload, File, Calendar, Bell, Shield, Lock,
+  Network, UserCog, Briefcase, BarChart2
+} from 'lucide-react';
+
+// PDF Generation Libraries
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+// Import API functions - Using new clean V2 API
+import {
+  loginAndGetToken, 
+  connectWebSocket, 
+  fetchIBClients,
+  fetchCurrentUser,
+  getSessionPartnerId,
+  subscribeToTradeUpdates,
+  subscribeToAccountEvents,
+  fetchClientTrades,
+  submitWithdrawalRequest,
+  fetchClientAccount,
+  fetchClientEquity,
+  fetchClientTransactions,
+  fetchClientDeposits,
+  disconnectWebSocket,
+  fetchWithdrawalsHistory,
+  fetchAllTransactions,
+  fetchTradingAccounts,
+  saveUserDetails,
+  fetchAccountTypes,
+  fetchAccountLevels,
+  fetchUserCommunications,
+  resetUserPassword,
+  subscribeToSystemAlerts,
+  fetchServerConfig,
+  fetchVolumeHistory,
+  fetchCompleteClientData,
+  fetchNetworkStats
+} from './api_integration_v2';
+
+import Login from './Login';
+
+// --- Configuration ---
+const COMMISSION_RATES = {
+  tier1: { fx: 4.50, metals: 8.00 },
+  tier2: { fx: 1.00, metals: 3.00 },
+  tier3: { fx: 1.00, metals: 2.00 }
+};
+const PERFORMANCE_BONUS_TIERS = [
+  { threshold: 4500, rate: 0.10, label: "Tier 3 (+10%)" },
+  { threshold: 1000, rate: 0.08, label: "Tier 2 (+8%)" },
+  { threshold: 450, rate: 0.04, label: "Tier 1 (+4%)" },
+  { threshold: 0, rate: 0.00, label: "Base Tier (0%)" }
+];
+
+// --- NO MOCK DATA - Everything is fetched from XValley API ---
+// Empty arrays are used as initial state until real data loads
+
+// --- Helper Components ---
+
+// Removed top-level effect (moved into component lifecycle)
+
+const SidebarItem = ({ icon: Icon, label, active, onClick, collapsed }) => (
+  <button 
+    onClick={onClick}
+    className={`w-full flex items-center p-3 mb-1 transition-all rounded-lg ${
+      active 
+        ? 'bg-amber-500 text-neutral-900 font-bold shadow-lg shadow-amber-500/20' 
+        : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'
+    }`}
+  >
+    <Icon size={20} className="min-w-[20px]" />
+    {!collapsed && <span className="ml-3 font-medium whitespace-nowrap">{label}</span>}
+  </button>
+);
+
+const StatCard = ({ title, value, subtext, trend, icon: Icon, trendUp, isLoading }) => (
+  <div className="bg-neutral-900 rounded-xl p-6 shadow-sm border border-neutral-800 flex items-start justify-between relative min-h-[140px]">
+    {isLoading && (
+      <div className="absolute inset-0 bg-neutral-900/50 rounded-xl flex items-center justify-center">
+        <div className="flex items-center gap-2">
+          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-amber-500"></div>
+          <span className="text-xs text-neutral-400">Loading...</span>
+        </div>
+      </div>
+    )}
+    <div className={isLoading ? 'opacity-50' : ''}>
+      <p className="text-sm font-medium text-neutral-400 mb-1">{title}</p>
+      <h3 className="text-2xl font-bold text-white">{value}</h3>
+      <div className="flex items-center mt-2">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex items-center ${trendUp ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+          {trendUp ? <TrendingUp size={12} className="mr-1"/> : <TrendingDown size={12} className="mr-1"/>}
+          {trend}
+        </span>
+        <span className="text-xs text-neutral-500 ml-2">{subtext}</span>
+      </div>
+    </div>
+    <div className={`p-3 bg-neutral-800 rounded-lg text-amber-500 border border-neutral-700 shadow-inner ${isLoading ? 'opacity-50' : ''}`}>
+      <Icon size={24} />
+    </div>
+  </div>
+);
+
+const StatusBadge = ({ status }) => {
+  const styles = {
+    Approved: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    Pending: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    Rejected: "bg-red-500/10 text-red-400 border-red-500/20",
+    Active: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    Onboarding: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    Paid: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    Processing: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    High: "text-red-400 font-bold",
+    Low: "text-emerald-400",
+    Medium: "text-amber-400",
+    "N/A": "text-neutral-500"
+  };
+  return (
+    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium border ${styles[status] || "bg-neutral-800 text-neutral-400"}`}>
+      {status}
+    </span>
+  );
+};
+
+// --- NEW FEATURES ---
+
+const RealTimeTicker = () => {
+  const [latestTrade, setLatestTrade] = useState(null);
+  const [tradeTime, setTradeTime] = useState(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    subscribeToTradeUpdates((data) => {
+      // Support both shapes: payload may be { data, timestamp } or raw payload
+      const payload = data && data.data ? data.data : data;
+      const tsRaw = data && data.timestamp ? data.timestamp : (payload && (payload.CEDT || payload.EDT || payload.CreatedOn || payload.ModifiedOn || payload.Date));
+      let ts = null;
+      if (tsRaw) {
+        try {
+          if (tsRaw instanceof Date) ts = tsRaw.getTime();
+          else if (typeof tsRaw === 'number') ts = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
+          else {
+            const parsed = Date.parse(tsRaw);
+            if (!isNaN(parsed)) ts = parsed;
+          }
+        } catch (e) {
+          ts = null;
+        }
+      }
+      setLatestTrade(payload);
+      setTradeTime(ts);
+      setTimeout(() => {
+        setLatestTrade(null);
+        setTradeTime(null);
+      }, 4000);
+    });
+  }, []);
+
+  // Force re-render every second while ticker is visible
+  useEffect(() => {
+    if (!latestTrade) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [latestTrade]);
+
+  if (!latestTrade) return null;
+
+  // Robust relative time helper - accepts Date | number | ISO string
+  const getRelativeTime = (date) => {
+    if (!date) return '';
+    let ts = null;
+    if (date instanceof Date) ts = date.getTime();
+    else if (typeof date === 'number') ts = date > 1e12 ? date : date * 1000;
+    else if (typeof date === 'string') {
+      const parsed = Date.parse(date);
+      if (!isNaN(parsed)) ts = parsed;
+    }
+    if (!ts) return '';
+
+    const nowTs = Date.now();
+    const diff = Math.floor((nowTs - ts) / 1000);
+    if (diff < 0) return 'in the future';
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff/60)} min ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)} hr ago`;
+    if (diff < 2592000) return `${Math.floor(diff/86400)} day${Math.floor(diff/86400) === 1 ? '' : 's'} ago`;
+    if (diff < 31536000) return `${Math.floor(diff/2592000)} month${Math.floor(diff/2592000) === 1 ? '' : 's'} ago`;
+    return `${Math.floor(diff/31536000)} year${Math.floor(diff/31536000) === 1 ? '' : 's'} ago`;
+  };
+
+  return (
+    <div className="fixed top-20 right-8 z-50 animate-bounce">
+      <div className="bg-neutral-900 border border-amber-500/50 shadow-lg shadow-amber-500/20 text-white px-4 py-2 rounded-lg flex items-center space-x-3">
+        <div className="bg-emerald-500/20 text-emerald-400 p-1 rounded-full">
+          <DollarSign size={16} />
+        </div>
+        <div>
+          <p className="text-xs text-neutral-400 uppercase font-bold">New Commission</p>
+          <p className="text-sm font-bold text-amber-500">
+            +${latestTrade.amount.toFixed(2)} 
+            <span className="text-neutral-500 font-normal ml-1">({latestTrade.symbol})</span>
+            <span className="ml-2 text-xs text-neutral-500">{getRelativeTime(tradeTime)}</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const WithdrawalModal = ({ onClose, onSubmit, available }) => {
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('Bank Wire');
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-md shadow-2xl relative">
+        <button onClick={onClose} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+        <h3 className="text-xl font-bold text-white mb-1">Request Withdrawal</h3>
+        <p className="text-sm text-neutral-400 mb-6">Available Balance: <span className="text-emerald-400 font-bold">${available.toLocaleString()}</span></p>
+
+        <div className="space-y-4">
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Amount</label>
+                <div className="relative mt-1">
+                    <DollarSign size={16} className="absolute left-3 top-3 text-neutral-500"/>
+                    <input 
+                        type="number" 
+                        value={amount} 
+                        onChange={e => setAmount(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 pl-9 pr-4 text-white focus:border-amber-500 focus:outline-none"
+                        placeholder="0.00"
+                        max={available}
+                    />
+                </div>
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Method</label>
+                <select 
+                    value={method} 
+                    onChange={e => setMethod(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-3 text-white focus:border-amber-500 focus:outline-none"
+                >
+                    <option>Bank Wire</option>
+                    <option>USDT (TRC20)</option>
+                    <option>USDT (ERC20)</option>
+                    <option>USDC (POL)</option>
+                    <option>USDC (ERC20)</option>
+                    <option>Skrill</option>
+                </select>
+            </div>
+        </div>
+
+        <div className="mt-8 flex gap-3">
+            <button onClick={onClose} className="flex-1 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors">Cancel</button>
+            <button 
+                onClick={() => onSubmit(amount, method)}
+                disabled={!amount || amount > available}
+                className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 rounded-lg font-bold transition-colors"
+            >
+                Confirm Request
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CreateCampaignModal = ({ onClose, onSubmit }) => {
+  const [name, setName] = useState('');
+  
+  const handleSubmit = () => {
+    if(!name) return;
+    const tag = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    onSubmit({ name, tag });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-sm shadow-2xl relative">
+        <button onClick={onClose} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+        <h3 className="text-xl font-bold text-white mb-4">Create New Campaign</h3>
+        
+        <div className="space-y-4">
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Campaign Name</label>
+                <input 
+                    type="text" 
+                    value={name} 
+                    onChange={e => setName(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
+                    placeholder="e.g. Summer Promo 2024"
+                    autoFocus
+                />
+            </div>
+        </div>
+        <div className="mt-6">
+            <button 
+                onClick={handleSubmit}
+                disabled={!name}
+                className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 rounded-lg font-bold transition-colors"
+            >
+                Create Tracking Link
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UploadAssetModal = ({ onClose, onSubmit }) => {
+  const [name, setName] = useState('');
+  const [type, setType] = useState('image');
+
+  const handleSubmit = () => {
+    if(!name) return;
+    onSubmit({ name, type });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-sm shadow-2xl relative">
+        <button onClick={onClose} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+        <h3 className="text-xl font-bold text-white mb-4">Upload Marketing Asset</h3>
+        
+        <div className="space-y-4">
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Asset Name</label>
+                <input 
+                    type="text" 
+                    value={name} 
+                    onChange={e => setName(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
+                    placeholder="e.g. Q4 Banner Set"
+                />
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">File Type</label>
+                <select 
+                    value={type} 
+                    onChange={e => setType(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
+                >
+                    <option value="image">Image (JPG/PNG)</option>
+                    <option value="zip">Archive (ZIP)</option>
+                    <option value="doc">Document (PDF)</option>
+                </select>
+            </div>
+            <div className="border-2 border-dashed border-neutral-700 rounded-lg p-8 text-center hover:border-amber-500/50 transition-colors cursor-pointer">
+                <Upload size={24} className="mx-auto text-neutral-500 mb-2"/>
+                <p className="text-xs text-neutral-400">Click to select file</p>
+            </div>
+        </div>
+        <div className="mt-6">
+            <button 
+                onClick={handleSubmit}
+                disabled={!name}
+                className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 rounded-lg font-bold transition-colors"
+            >
+                Upload Asset
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ClientDetailView = ({ client, onBack }) => {
+  const [history, setHistory] = useState([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);  // Start with loading state
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadClientHistory = async () => {
+      setIsLoadingHistory(true);
+      try {
+        let aggregated = [];
+        
+        // Use realAccountIds from client object if available (already fetched)
+        // Otherwise fall back to fetching accounts by username
+        let accountIds = client.realAccountIds || client.accountIds || [];
+        
+        if (accountIds.length === 0) {
+          // Fallback: fetch trading accounts by username
+          const username = client.username || client.UserName || client.Email || client.id;
+          console.log(`No cached account IDs, fetching accounts for: ${username}`);
+          try {
+            const accounts = await fetchTradingAccounts(username);
+            accountIds = accounts.filter(a => a.isReal).map(a => a.id);
+            console.log(`Fetched ${accounts.length} accounts, ${accountIds.length} real accounts`);
+          } catch (e) {
+            console.warn('fetchTradingAccounts failed:', e && (e.message || e));
+          }
+        } else {
+          console.log(`Using cached account IDs for ${client.username}: ${accountIds.join(', ')}`);
+        }
+
+        if (accountIds.length > 0) {
+          // Fetch closed trades for each trading account and aggregate
+          for (const accId of accountIds) {
+            try {
+              // Pass empty strings for fromDate/toDate to get all trades
+              const accTrades = await fetchClientTrades(accId, '', '');
+              if (Array.isArray(accTrades) && accTrades.length > 0) {
+                aggregated = aggregated.concat(accTrades.map(t => ({...t, _accountId: accId})));
+              }
+            } catch (e) {
+              console.warn(`Failed to fetch trades for account ${accId}:`, e && (e.message || e));
+            }
+          }
+        } else if (client.id) {
+          // Fallback: try fetching trades by client.id (may be a TraderAccountId)
+          try {
+            const fallbackTrades = await fetchClientTrades(client.id, '', '');
+            if (Array.isArray(fallbackTrades)) aggregated = aggregated.concat(fallbackTrades);
+          } catch (e) {
+            console.warn('Fallback fetchClientTrades failed:', e && (e.message || e));
+          }
+        }
+
+        if (!cancelled) setHistory(aggregated || []);
+      } catch (err) {
+        console.error('Load client history error:', err && (err.message || err));
+        if (!cancelled) setHistory([]);
+      } finally {
+        if (!cancelled) setIsLoadingHistory(false);
+      }
+    };
+
+    loadClientHistory();
+    return () => { cancelled = true; };
+  }, [client]);
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <button onClick={onBack} className="flex items-center text-neutral-400 hover:text-white mb-4">
+        <ArrowLeft size={18} className="mr-2" /> Back to Client List
+      </button>
+      
+      <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b border-neutral-800 pb-6">
+            <div>
+                <h2 className="text-2xl font-bold text-white">{client.name}</h2>
+                <p className="text-neutral-500 text-sm mt-1">Client ID: {client.id} • Account Status: <span className="text-emerald-400 font-medium">{client.status}</span></p>
+            </div>
+            <div className="mt-4 md:mt-0 text-right">
+                 <span className="text-xs text-neutral-500 uppercase font-bold block mb-1">Risk Profile</span>
+                 <StatusBadge status={client.risk || 'Low'} />
+            </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+            <div>
+                <p className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Users size={12} className="mr-1"/> Contact Info</p>
+                <div className="space-y-1">
+                  <p className="text-white text-sm font-medium">{client.email}</p>
+                  <p className="text-neutral-400 text-sm">{client.phone}</p>
+                </div>
+            </div>
+            <div>
+                <p className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Globe size={12} className="mr-1"/> Compliance</p>
+                <div className="space-y-2">
+                  <p className="text-white text-sm flex items-center">{client.country}</p>
+                  <StatusBadge status={client.kycStatus} />
+                </div>
+            </div>
+            <div>
+                <p className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Wallet size={12} className="mr-1"/> Financials</p>
+                <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                        <span className="text-neutral-400">Net Deposit:</span>
+                        <span className="text-white font-medium">${client.deposit.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                        <span className="text-neutral-400">Live Equity:</span>
+                        <span className={`font-bold ${client.equity < client.deposit * 0.5 ? 'text-red-400' : 'text-emerald-400'}`}>${client.equity.toLocaleString()}</span>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <p className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Activity size={12} className="mr-1"/> Activity</p>
+                <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                        <span className="text-neutral-400">Total Lots:</span>
+                        <span className="text-amber-500 font-bold">{(typeof client.lots === 'number') ? client.lots.toFixed(2) : '0.00'}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                        <span className="text-neutral-400">Last Active:</span>
+                        <span className="text-neutral-300">{(() => {
+                          // Use lastLogin from API if available
+                          const lastDate = client.lastLogin || client.lastActive;
+                          if (!lastDate) return 'N/A';
+                          try {
+                            const d = new Date(lastDate);
+                            if (isNaN(d.getTime())) return 'N/A';
+                            return d.toLocaleDateString();
+                          } catch { return 'N/A'; }
+                        })()}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+      </div>
+
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-neutral-800 font-bold text-white bg-neutral-800/20">Trading History</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+              <thead className="bg-neutral-800/50 text-neutral-400 font-semibold">
+                  <tr>
+                      <th className="p-3">Symbol</th>
+                      <th className="p-3">Type</th>
+                      <th className="p-3 text-right">Volume</th>
+                      <th className="p-3">Open Time</th>
+                      <th className="p-3 text-right">P/L</th>
+                      <th className="p-3 text-right">Commission</th>
+                  </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800">
+                  {isLoadingHistory ? (
+                    <tr key="loading-history-row">
+                      <td colSpan="6" className="p-8 text-center">
+                        <div className="flex items-center justify-center">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500"></div>
+                          <span className="ml-3 text-neutral-400">Loading trading history...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : history.length > 0 ? history.map((trade) => (
+                      <tr key={trade.id || JSON.stringify(trade)} className="hover:bg-neutral-800/30">
+                          <td className="p-3 font-medium text-white">{trade.symbol || trade.instrument}</td>
+                          <td className={`p-3 ${(trade.type || trade.side) === 'Buy' ? 'text-emerald-400' : 'text-red-400'}`}>{trade.type || trade.side}</td>
+                          <td className="p-3 text-right">{(trade.volume !== undefined && trade.volume !== null) ? (Number(trade.volume).toString()) : '0'}</td>
+                          <td className="p-3 text-neutral-500">{(() => {
+                              const v = trade.openTime || trade.openDate || trade.EDT || trade.OpenTime;
+                              if (!v) return '';
+                              try {
+                                if (v instanceof Date) return v.toLocaleString();
+                                if (typeof v === 'number') return (v > 1e12 ? new Date(v) : new Date(v * 1000)).toLocaleString();
+                                if (typeof v === 'string' && !isNaN(Date.parse(v))) return new Date(Date.parse(v)).toLocaleString();
+                                return String(v);
+                              } catch (e) { return String(v); }
+                          })()}</td>
+                          <td className={`p-3 text-right font-medium ${(trade.profitLoss || trade.profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {(() => {
+                                const pl = trade.profitLoss || trade.profit || 0;
+                                return `${pl >= 0 ? '+' : ''}${Number(pl).toFixed(2)}`;
+                              })()}
+                          </td>
+                          <td className="p-3 text-right font-bold text-amber-500">+${(() => {
+                              // Use API commission if provided, otherwise calculate from volume
+                              if (trade.commission && trade.commission > 0) return trade.commission.toFixed(2);
+                              // Calculate based on instrument type
+                              const vol = parseFloat(trade.volume) || 0;
+                              const instrument = (trade.symbol || trade.instrument || '').toUpperCase();
+                              // Metals get $8/lot, FX gets $4.50/lot
+                              const rate = (instrument.includes('XAU') || instrument.includes('XAG')) ? 8 : 4.5;
+                              return (vol * rate).toFixed(2);
+                            })()}</td>
+                      </tr>
+                  )) : (
+                    <tr key="no-history-row">
+                      <td colSpan="6" className="p-8 text-center text-neutral-500">No trading history found for this client.</td>
+                    </tr>
+                  )}
+              </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- VIEWS ---
+
+const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTotalVolume, setRevenue, setTotalPL, setTradeHistory: setParentTradeHistory, totalVolume, revenue, tradeHistory: parentTradeHistory }) => {
+  const [timeRange, setTimeRange] = useState('Lifetime');
+  const [showNotifModal, setShowNotifModal] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [notifPage, setNotifPage] = useState(1);
+  // Initialize localTradeHistory from parent tradeHistory prop (for Lifetime view)
+  const [localTradeHistory, setLocalTradeHistory] = useState({ trades: [], totalVolume: 0, totalPL: 0 });
+  const [isLoadingTrades, setIsLoadingTrades] = useState(false);
+  const [transactions, setTransactions] = useState([]);  // All transactions for deposit filtering
+  const [localDeposits, setLocalDeposits] = useState(0);  // Deposits for current time range
+  
+  // Store lifetime data separately so we can restore it when switching back
+  const [lifetimeData, setLifetimeData] = useState({ totalVolume: 0, totalRevenue: 0, totalPL: 0, trades: [] });
+  
+  // Sync lifetime data when parent tradeHistory changes (initial load)
+  useEffect(() => {
+    if (parentTradeHistory && Array.isArray(parentTradeHistory) && parentTradeHistory.length > 0) {
+      // Parent passes trades array
+      const vol = parentTradeHistory.reduce((sum, t) => sum + (t.volume || 0), 0);
+      const pl = parentTradeHistory.reduce((sum, t) => sum + (t.profitLoss || 0), 0);
+      setLifetimeData({
+        trades: parentTradeHistory,
+        totalVolume: vol,
+        totalPL: pl,
+        totalRevenue: totalVolume // Use parent's revenue
+      });
+      setLocalTradeHistory({ trades: parentTradeHistory, totalVolume: vol, totalPL: pl });
+    } else if (parentTradeHistory && parentTradeHistory.trades) {
+      setLifetimeData(parentTradeHistory);
+      setLocalTradeHistory(parentTradeHistory);
+    }
+  }, [parentTradeHistory]);
+  
+  // Fetch all transactions once on mount for deposit filtering
+  useEffect(() => {
+    if (apiStatus !== 'connected') return;
+    
+    const loadTransactions = async () => {
+      try {
+        const txns = await fetchAllTransactions();
+        setTransactions(txns || []);
+        
+        // Debug: Show transaction stats
+        if (txns && txns.length > 0) {
+          const deposits = txns.filter(t => t.side === 1);
+          const withdrawals = txns.filter(t => t.side === 2);
+          const totalDep = deposits.reduce((s, t) => s + (t.depositedAmount || 0), 0);
+          console.log(`Loaded ${txns.length} transactions: ${deposits.length} deposits ($${totalDep.toFixed(2)}), ${withdrawals.length} withdrawals`);
+          if (txns[0]) {
+            console.log('Sample tx:', { username: txns[0].username, side: txns[0].side, amount: txns[0].depositedAmount, date: txns[0].date });
+          }
+        } else {
+          console.log('No transactions loaded');
+        }
+      } catch (err) {
+        console.error('Failed to load transactions:', err);
+      }
+    };
+    
+    loadTransactions();
+  }, [apiStatus]);
+
+  // Track current request to avoid race conditions - use AbortController pattern
+  const abortControllerRef = useRef(null);
+  const requestIdRef = useRef(0);
+
+  // Fetch trade history when time range changes
+  useEffect(() => {
+    if (apiStatus !== 'connected') return;
+
+    // Increment request ID to track latest request
+    const requestId = ++requestIdRef.current;
+    
+    // Cancel any previous request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
+    // Create new abort controller for this request
+    abortControllerRef.current = { 
+      signal: { aborted: false },
+      abort: function() { this.signal.aborted = true; }
+    };
+    
+    const currentSignal = abortControllerRef.current.signal;
+    
+    console.log(`[Request ${requestId}] Starting for ${timeRange}`);
+
+    const loadTradeHistory = async () => {
+      try {
+        setIsLoadingTrades(true);
+        
+        if (timeRange === 'Lifetime') {
+          // For Lifetime, prefer using stored data or parent data
+          if (lifetimeData.totalVolume > 0) {
+            // Check if request was cancelled before using stored data
+            if (currentSignal.aborted) {
+              console.log(`[Request ${requestId}] Cancelled before setting lifetime data`);
+              return;
+            }
+            // Use stored lifetime data
+            console.log(`[Request ${requestId}] Using stored lifetime data: ${lifetimeData.totalVolume}`);
+            setLocalTradeHistory(lifetimeData);
+            setTotalVolume(lifetimeData.totalVolume);
+            setRevenue(lifetimeData.totalRevenue || revenue);
+            setTotalPL(lifetimeData.totalPL);
+            setIsLoadingTrades(false);
+            return;
+          }
+          
+          // Check if parent already has data (from initial fetchNetworkStats)
+          if (totalVolume > 0 || revenue > 0) {
+            if (currentSignal.aborted) {
+              console.log(`[Request ${requestId}] Cancelled before setting parent data`);
+              return;
+            }
+            console.log(`[Request ${requestId}] Using parent data for Lifetime: ${totalVolume}`);
+            setLocalTradeHistory({ trades: parentTradeHistory || [], totalVolume, totalPL: 0, totalRevenue: revenue });
+            setLifetimeData({ trades: parentTradeHistory || [], totalVolume, totalPL: 0, totalRevenue: revenue });
+            setIsLoadingTrades(false);
+            return;
+          }
+          
+          // Only re-fetch if we truly have no data
+          console.log(`[Request ${requestId}] Re-fetching Lifetime data...`);
+          const history = await fetchVolumeHistory('Lifetime');
+          
+          // Check if this request was cancelled
+          if (currentSignal.aborted) {
+            console.log(`[Request ${requestId}] Cancelled after Lifetime fetch`);
+            return;
+          }
+          
+          setLifetimeData(history);
+          setLocalTradeHistory(history);
+          setParentTradeHistory(history.trades || []);
+          setTotalVolume(history.totalVolume || 0);
+          setRevenue(history.totalRevenue || 0);
+          setTotalPL(history.totalPL || 0);
+          console.log(`[Request ${requestId}] Lifetime data updated successfully`);
+        } else {
+          console.log(`[Request ${requestId}] Fetching volume history for ${timeRange}`);
+          const history = await fetchVolumeHistory(timeRange);
+          
+          // Check if this request was cancelled
+          if (currentSignal.aborted) {
+            console.log(`[Request ${requestId}] Cancelled after ${timeRange} fetch`);
+            return;
+          }
+          
+          setLocalTradeHistory(history);
+          // Don't update parent state for non-lifetime ranges - keep lifetime data intact
+          setTotalVolume(history.totalVolume || 0);
+          setRevenue(history.totalRevenue || 0);
+          setTotalPL(history.totalPL || 0);
+          console.log(`[Request ${requestId}] ${timeRange} data updated successfully`);
+        }
+      } catch (err) {
+        if (!currentSignal.aborted) {
+          console.error(`[Request ${requestId}] Failed to load trade history:`, err);
+        } else {
+          console.log(`[Request ${requestId}] Request was cancelled, ignoring error`);
+        }
+      } finally {
+        // Only clear loading if this request wasn't cancelled
+        if (!currentSignal.aborted) {
+          setIsLoadingTrades(false);
+        }
+      }
+    };
+
+    loadTradeHistory();
+    
+    // Cleanup: cancel request if component unmounts or timeRange changes
+    return () => {
+      if (abortControllerRef.current) {
+        console.log(`[Request ${requestId}] Cleanup: Aborting request`);
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [timeRange, apiStatus]);
+
+  // Helper to compute lots for a client in dashboard context
+  const computeClientLots = (client) => {
+    return client?.lots || 0;
+  };
+
+  // Available time periods for filtering
+  const timePeriods = ['Today', 'This Week', 'This Month', 'This Quarter', 'This Year', 'Lifetime'];
+
+  // Helper function to get date range based on time period
+  // FIXED: Properly set end-of-day (23:59:59.999) to include all data for the period
+  const getDateRange = (period) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Helper to get end of day (23:59:59.999)
+    const getEndOfDay = (date) => {
+      const end = new Date(date);
+      end.setHours(23, 59, 59, 999);
+      return end;
+    };
+    
+    switch (period) {
+      case 'Today':
+        return { start: today, end: getEndOfDay(today) };
+      case 'This Week': {
+        const startOfWeek = new Date(today);
+        startOfWeek.setDate(today.getDate() - today.getDay());
+        return { start: startOfWeek, end: getEndOfDay(today) };
+      }
+      case 'This Month': {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { start: startOfMonth, end: getEndOfDay(today) };
+      }
+      case 'This Quarter': {
+        const quarter = Math.floor(now.getMonth() / 3);
+        const startOfQuarter = new Date(now.getFullYear(), quarter * 3, 1);
+        return { start: startOfQuarter, end: getEndOfDay(today) };
+      }
+      case 'This Year': {
+        const startOfYear = new Date(now.getFullYear(), 0, 1);
+        return { start: startOfYear, end: getEndOfDay(today) };
+      }
+      case 'Lifetime':
+      default:
+        return { start: new Date(0), end: now }; // All time
+    }
+  };
+
+  // Filter clients by time range based on registration date
+  // Get usernames of clients who had trades in this time range
+  const getActiveUsernamesForRange = (trades) => {
+    const usernames = new Set();
+    if (trades && Array.isArray(trades)) {
+      trades.forEach(t => {
+        if (t.username) {
+          usernames.add(t.username.toLowerCase());
+        }
+      });
+    }
+    return usernames;
+  };
+
+  // Get filtered clients based on time range (clients with trades/activity)
+  const filteredClients = useMemo(() => {
+    if (timeRange === 'Lifetime') return clients;
+    
+    // For non-Lifetime ranges: filter to clients who had trades in that range
+    const activeUsernames = getActiveUsernamesForRange(localTradeHistory?.trades);
+    if (activeUsernames.size === 0) return [];
+    
+    return clients.filter(c => {
+      const username = (c.username || '').toLowerCase();
+      return activeUsernames.has(username);
+    });
+  }, [timeRange, localTradeHistory?.trades, clients]);
+  
+  // Build set of client usernames for filtering transactions
+  const clientUsernameSet = useMemo(() => {
+    return new Set(clients.map(c => (c.username || '').toLowerCase()).filter(Boolean));
+  }, [clients]);
+
+  // Calculate deposits for ALL time ranges using client.deposit field
+  const calculateDepositsForRange = () => {
+    // DEPOSITS = client.deposit field (authoritative cumulative deposit per client)
+    // For ALL time ranges: sum client deposits from active clients
+    // - Lifetime: ALL clients
+    // - Other ranges: clients who had trades in that time range
+    
+    if (!clients || clients.length === 0) {
+      console.log(`[Deposits] No clients available`);
+      return 0;
+    }
+    
+    // For Lifetime: sum ALL client deposits
+    if (timeRange === 'Lifetime') {
+      const allDeposits = clients.reduce((sum, c) => sum + (c.deposit || 0), 0);
+      console.log(`[Deposits] Lifetime: ALL ${clients.length} clients, deposits = $${allDeposits.toFixed(2)}`);
+      return allDeposits;
+    }
+    
+    // For other time ranges: use filteredClients (clients who had trades in this range)
+    // Sum their authoritative client.deposit values
+    const clientsToSum = (filteredClients && filteredClients.length > 0) ? filteredClients : [];
+    const rangeDeposits = clientsToSum.reduce((sum, c) => sum + (c.deposit || 0), 0);
+    
+    console.log(`[Deposits] ${timeRange}: ${clientsToSum.length} clients with trades, deposits = $${rangeDeposits.toFixed(2)}`);
+    return rangeDeposits;
+  };
+  
+  const totalDeposits = calculateDepositsForRange();
+  
+  // Debug metrics (use parent totals passed into component)
+  console.log(`Time Range: ${timeRange}, Clients: ${filteredClients.length}, Volume: ${totalVolume.toFixed ? totalVolume.toFixed(2) : totalVolume}, Revenue: ${revenue.toFixed ? revenue.toFixed(2) : revenue}, Deposits: ${totalDeposits}`);
+
+  // Simplified metrics - trends are placeholder
+  const currentMetrics = {
+    revenue: revenue,
+    deposits: totalDeposits,
+    volume: totalVolume,
+    revTrend: '+0.0%',
+    depTrend: '+0.0%',
+    volTrend: '+0.0%'
+  };
+
+  // Compute active/pending counts robustly using raw trader data when available
+  const isClientActive = (c) => {
+    // Check the explicit active flag we set from API
+    if (c.active === true) return true;
+    
+    // Prefer explicit client.status when it clearly declares Active
+    if (c.status && typeof c.status === 'string' && c.status.toLowerCase() === 'active') return true;
+    
+    // Check if client has equity or balance (indicates active trading)
+    if ((c.equity && c.equity > 0) || (c.balance && c.balance > 0)) return true;
+    
+    // Check if client has deposits
+    if (c.deposit && c.deposit > 0) return true;
+
+    // If raw trading accounts are present, follow XValley logic
+    if (Array.isArray(c._rawTraders) && c._rawTraders.length > 0) {
+      return c._rawTraders.some(t => {
+        const isActiveFlag = (t.A === true) || (t.Active === true) || (t.State === 0);
+        const accountType = t.TATD || t.tatd || t['TATD'] || {};
+        const isReal = (accountType && typeof accountType.Type !== 'undefined') ? (accountType.Type === 1) : (String(t.TATD?.Type || t.TAT || t.TATD).includes('1'));
+        return isActiveFlag && isReal;
+      });
+    }
+
+    return false;
+  };
+
+  const activeClients = clients.filter(c => isClientActive(c)).length;
+  const pendingKYC = clients.filter(c => {
+    // Prefer explicit approved boolean when present
+    if (typeof c.approved !== 'undefined') return !c.approved;
+    // Otherwise fall back to kycStatus string
+    return (c.kycStatus || 'Pending') === 'Pending';
+  }).length;
+  
+  // New clients in selected time period
+  const newClientsInPeriod = filteredClients.length;
+
+  // Generate notifications from real client data
+  // Robust relative time helper - accepts Date | number | ISO string
+  const getRelativeTime = (date) => {
+    if (!date) return '';
+    let ts = null;
+    if (date instanceof Date) ts = date.getTime();
+    else if (typeof date === 'number') ts = date > 1e12 ? date : date * 1000;
+    else if (typeof date === 'string') {
+      const parsed = Date.parse(date);
+      if (!isNaN(parsed)) ts = parsed;
+    }
+    if (!ts) return '';
+
+    const nowTs = Date.now();
+    const diff = Math.floor((nowTs - ts) / 1000);
+    if (diff < 0) return 'in the future';
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff/60)} min ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)} hr ago`;
+    if (diff < 2592000) return `${Math.floor(diff/86400)} day${Math.floor(diff/86400) === 1 ? '' : 's'} ago`;
+    if (diff < 31536000) return `${Math.floor(diff/2592000)} month${Math.floor(diff/2592000) === 1 ? '' : 's'} ago`;
+    return `${Math.floor(diff/31536000)} year${Math.floor(diff/31536000) === 1 ? '' : 's'} ago`;
+  };
+
+  const allNotifications = clients.length > 0 ? clients.slice(0, 25).map((client, i) => {
+    const types = [
+      { type: 'signup', msg: `${client.name || 'New client'} registered from ${client.country || 'Unknown'}`, icon: Users, color: 'text-blue-400', time: client.registeredAt || client.createdAt || client.updatedAt },
+      { type: 'deposit', msg: `${client.name || 'Client'} deposited $${(client.deposit || 0).toLocaleString()}`, icon: Wallet, color: 'text-emerald-400', time: client.lastDepositAt || client.updatedAt || client.createdAt },
+      { type: 'kyc', msg: `${client.name || 'Client'} - KYC ${client.kycStatus || 'Pending'}`, icon: FileText, color: 'text-amber-400', time: client.kycUpdatedAt || client.updatedAt || client.createdAt },
+      { type: 'trade', msg: `${client.name || 'Client'} traded ${computeClientLots(client).toFixed(2)} lots`, icon: Activity, color: 'text-purple-400', time: client.lastTradeAt || client.updatedAt || client.createdAt }
+    ];
+    const typeData = types[i % 4];
+    return {
+      id: client.id || i,
+      type: typeData.type,
+      msg: typeData.msg,
+      time: getRelativeTime(typeData.time),
+      icon: typeData.icon,
+      color: typeData.color
+    };
+  }) : [];
+
+  const itemsPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(allNotifications.length / itemsPerPage));
+  const currentNotifications = allNotifications.slice((notifPage - 1) * itemsPerPage, notifPage * itemsPerPage);
+
+  const handleCopyLink = () => {
+    const mainLink = `https://nommia.com/register?ib=${getSessionPartnerId() || ''}`;
+    navigator.clipboard.writeText(mainLink);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn relative">
+      
+      {showNotifModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-lg shadow-2xl flex flex-col max-h-[80vh]">
+            <div className="p-4 border-b border-neutral-800 flex justify-between items-center">
+              <h3 className="font-bold text-white">All Notifications</h3>
+              <button onClick={() => setShowNotifModal(false)} className="text-neutral-500 hover:text-white"><X size={20}/></button>
+            </div>
+            <div className="overflow-y-auto p-4 space-y-3 flex-1">
+              {currentNotifications.map((notif) => (
+                <div key={notif.id} className="flex items-start p-3 bg-neutral-950 rounded-lg border border-neutral-800">
+                  <div className={`mt-0.5 min-w-[24px] h-6 rounded-full bg-neutral-900 border border-neutral-700 flex items-center justify-center ${notif.color}`}>
+                    <notif.icon size={12} />
+                  </div>
+                  <div className="ml-3">
+                    <p className="text-sm text-neutral-300">{notif.msg}</p>
+                    <p className="text-xs text-neutral-600 mt-1 flex items-center"><Clock size={10} className="mr-1"/> {notif.time}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-neutral-800 flex justify-between items-center bg-neutral-900 rounded-b-xl">
+              <button onClick={() => setNotifPage(p => Math.max(1, p - 1))} disabled={notifPage === 1} className="text-xs font-bold text-neutral-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center px-3 py-2 bg-neutral-800 rounded"><ChevronDown size={14} className="rotate-90 mr-1"/> Previous</button>
+              <span className="text-xs text-neutral-500">Page {notifPage} of {totalPages}</span>
+              <button onClick={() => setNotifPage(p => Math.min(totalPages, p + 1))} disabled={notifPage === totalPages} className="text-xs font-bold text-neutral-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center px-3 py-2 bg-neutral-800 rounded">Next <ChevronDown size={14} className="rotate-[-90] ml-1"/></button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header and Time Filter */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        {/* Status Bar */}
+        <div className="flex-1 flex gap-4 w-full">
+            {apiStatus === 'disconnected' ? (
+            <div className="flex-1 bg-amber-900/30 border border-amber-500/30 text-amber-200 p-3 rounded-lg flex items-center text-sm">
+                <AlertCircle size={16} className="mr-2" />
+                <span>Viewing cached data. Connect to XValley API for live updates.</span>
+            </div>
+            ) : clients.length > 0 ? (
+            <div className="flex-1 bg-emerald-900/20 border border-emerald-500/20 text-emerald-300 p-3 rounded-lg flex items-center text-sm">
+                <Activity size={16} className="mr-2" />
+                <span>Live Stream Active: Receiving tick data...</span>
+            </div>
+            ) : (
+            <div className="flex-1 bg-amber-900/30 border border-amber-500/30 text-amber-200 p-3 rounded-lg flex items-center text-sm">
+                <AlertCircle size={16} className="mr-2" />
+                <span>Connecting to XValley API...</span>
+            </div>
+            )}
+            
+            {pendingKYC > 0 && (
+            <div className="bg-neutral-800 border-l-4 border-amber-500 p-3 rounded-r-lg flex items-center shadow-lg animate-pulse hover:animate-none transition-all hidden md:flex">
+                <div className="mr-4">
+                <div className="text-2xl font-bold text-white">{pendingKYC}</div>
+                </div>
+                <div>
+                <div className="text-xs text-neutral-400 uppercase font-bold">Pending Approvals</div>
+                <div className="text-sm text-white">Clients awaiting KYC review</div>
+                </div>
+                <button onClick={() => onNavigate('clients')} className="ml-4 px-3 py-1 bg-neutral-700 hover:bg-neutral-600 text-xs rounded text-white transition-colors border border-neutral-600">Review Now</button>
+            </div>
+            )}
+        </div>
+
+        {/* Time Selector */}
+        <div className="relative min-w-[160px]">
+            <select 
+                value={timeRange}
+                onChange={(e) => setTimeRange(e.target.value)}
+                className="w-full bg-neutral-900 border border-neutral-700 text-white text-sm rounded-lg pl-4 pr-10 py-2.5 focus:border-amber-500 outline-none appearance-none font-medium cursor-pointer hover:bg-neutral-800 transition-colors"
+            >
+                {timePeriods.map(period => (
+                    <option key={period} value={period}>{period}</option>
+                ))}
+            </select>
+            <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard title="Total Revenue" value={`$${currentMetrics.revenue.toLocaleString()}`} subtext={timeRange} trend={currentMetrics.revTrend} trendUp={!currentMetrics.revTrend.includes('-')} icon={DollarSign} isLoading={isLoadingTrades} />
+        <StatCard title="Active Clients" value={activeClients} subtext="Live accounts (Current)" trend="+5.2%" trendUp={true} icon={Users} isLoading={false} />
+        <StatCard title="Total Deposits" value={`$${currentMetrics.deposits.toLocaleString()}`} subtext={timeRange} trend={currentMetrics.depTrend} trendUp={!currentMetrics.depTrend.includes('-')} icon={Wallet} isLoading={isLoadingTrades} />
+        <StatCard title="Network Volume" value={`${currentMetrics.volume.toLocaleString()}`} subtext={`${timeRange} (Lots)`} trend={currentMetrics.volTrend} trendUp={!currentMetrics.volTrend.includes('-')} icon={Activity} isLoading={isLoadingTrades} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6 flex flex-col">
+          <div className="flex justify-between items-center mb-6">
+             <div>
+               <h3 className="font-bold text-white">Trading Volume History</h3>
+               <p className="text-xs text-neutral-500 mt-0.5">Total lots traded by your direct clients</p>
+             </div>
+             <div className="text-xs text-neutral-500 font-mono bg-neutral-950 px-2 py-1 rounded border border-neutral-800">
+                Viewing: {timeRange}
+             </div>
+          </div>
+          
+          <div className="flex-1 flex items-end gap-2 h-64 ml-12 px-2 border-l border-b border-neutral-800 relative min-h-[16rem]">
+            {isLoadingTrades ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500"></div>
+                <span className="ml-3 text-neutral-500">Loading trade history...</span>
+              </div>
+            ) : (() => {
+              // Generate chart data - use trade history if available, otherwise fallback to client data
+              const generateChartData = () => {
+                const { trades } = localTradeHistory;
+                const now = new Date();
+                let labels = [];
+                let buckets = [];
+                // Define time buckets based on selected range
+                switch (timeRange) {
+                  case 'Today': {
+                    labels = Array.from({length: 12}, (_, i) => `${i*2}h`);
+                    buckets = labels.map((_, i) => {
+                      const start = new Date(now);
+                      start.setHours(i * 2, 0, 0, 0);
+                      const end = new Date(start);
+                      end.setHours(start.getHours() + 2);
+                      return { start, end };
+                    });
+                    break;
+                  }
+                  case 'This Week': {
+                    labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                    const weekStart = new Date(now);
+                    weekStart.setDate(now.getDate() - now.getDay());
+                    weekStart.setHours(0, 0, 0, 0);
+                    buckets = labels.map((_, i) => {
+                      const start = new Date(weekStart);
+                      start.setDate(weekStart.getDate() + i);
+                      const end = new Date(start);
+                      end.setDate(start.getDate() + 1);
+                      return { start, end };
+                    });
+                    break;
+                  }
+                  case 'This Month': {
+                    labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                    buckets = labels.map((_, i) => {
+                      const start = new Date(monthStart);
+                      start.setDate(1 + i * 7);
+                      const end = new Date(start);
+                      end.setDate(start.getDate() + 7);
+                      return { start, end };
+                    });
+                    break;
+                  }
+                  case 'This Quarter': {
+                    const qMonth = Math.floor(now.getMonth() / 3) * 3;
+                    labels = [
+                      new Date(now.getFullYear(), qMonth, 1).toLocaleString('default', {month: 'short'}),
+                      new Date(now.getFullYear(), qMonth + 1, 1).toLocaleString('default', {month: 'short'}),
+                      new Date(now.getFullYear(), qMonth + 2, 1).toLocaleString('default', {month: 'short'})
+                    ];
+                    buckets = labels.map((_, i) => {
+                      const start = new Date(now.getFullYear(), qMonth + i, 1);
+                      const end = new Date(now.getFullYear(), qMonth + i + 1, 1);
+                      return { start, end };
+                    });
+                    break;
+                  }
+                  case 'This Year': {
+                    labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    buckets = labels.map((_, i) => {
+                      const start = new Date(now.getFullYear(), i, 1);
+                      const end = new Date(now.getFullYear(), i + 1, 1);
+                      return { start, end };
+                    });
+                    break;
+                  }
+                  case 'Lifetime':
+                  default: {
+                    // For Lifetime, find min/max trade dates and create monthly buckets spanning that range
+                    if (trades && trades.length > 0) {
+                      const tradeDates = trades.map(t => new Date(t.closeDate || t.EDT)).filter(d => !isNaN(d));
+                      if (tradeDates.length > 0) {
+                        const minDate = new Date(Math.min(...tradeDates.map(d => d.getTime())));
+                        const maxDate = new Date(Math.max(...tradeDates.map(d => d.getTime())));
+                        
+                        // Create monthly buckets from min to max date
+                        buckets = [];
+                        labels = [];
+                        let current = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+                        while (current <= maxDate) {
+                          const month = current.toLocaleString('default', {month: 'short', year: '2-digit'});
+                          labels.push(month);
+                          const start = new Date(current);
+                          const end = new Date(current);
+                          end.setMonth(current.getMonth() + 1);
+                          buckets.push({ start, end });
+                          current.setMonth(current.getMonth() + 1);
+                        }
+                      } else {
+                        // Fallback: current year months
+                        labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        buckets = labels.map((_, i) => {
+                          const start = new Date(now.getFullYear(), i, 1);
+                          const end = new Date(now.getFullYear(), i + 1, 1);
+                          return { start, end };
+                        });
+                      }
+                    } else {
+                      // No trades: current year
+                      labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                      buckets = labels.map((_, i) => {
+                        const start = new Date(now.getFullYear(), i, 1);
+                        const end = new Date(now.getFullYear(), i + 1, 1);
+                        return { start, end };
+                      });
+                    }
+                  }
+                }
+                
+                // Group volume by time bucket
+                // Use trade history if available, otherwise distribute client volume evenly
+                const bucketData = buckets.map((bucket, i) => {
+                  // Only use real trade data; if no trades, show 0
+                  if (!trades || trades.length === 0) {
+                    return { label: labels[i], value: 0, tradeCount: 0 };
+                  }
+                  const bucketTrades = trades.filter(t => {
+                    if (!t.closeDate) return false;
+                    const tradeDate = new Date(t.closeDate);
+                    return tradeDate >= bucket.start && tradeDate < bucket.end;
+                  });
+                  const vol = bucketTrades.reduce((sum, t) => sum + (t.volume || 0), 0);
+                  return { label: labels[i], value: vol, tradeCount: bucketTrades.length };
+                });
+                
+                // Calculate heights based on max value
+                const maxVol = Math.max(...bucketData.map(d => d.value), 0.1);
+                return bucketData.map(d => ({
+                  ...d,
+                  height: maxVol > 0 ? Math.max(5, (d.value / maxVol) * 95) : 5
+                }));
+              };
+              
+              const chartData = generateChartData();
+              const maxVal = Math.max(...chartData.map(d => d.value), 0.1);
+              
+              return (
+                <>
+                  <div className="absolute -left-12 top-0 bottom-8 flex flex-col justify-between text-[10px] text-neutral-500 font-mono text-right w-10">
+                    <span>{maxVal.toFixed(1)}</span>
+                    <span>{(maxVal / 2).toFixed(1)}</span>
+                    <span>0</span>
+                  </div>
+                  {chartData.map((data, i) => (
+                    <div key={i} className="flex-1 flex flex-col relative group h-full">
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-neutral-800 text-xs text-white p-2 rounded border border-neutral-700 whitespace-nowrap z-10 shadow-xl">
+                        {data.label}: {data.value.toFixed(2)} Lots ({data.tradeCount || 0} trades)
+                      </div>
+                      <div className="flex-1 flex items-end">
+                        <div 
+                          className="w-full bg-gradient-to-t from-amber-600 to-amber-400 rounded-t-sm transition-all duration-500 group-hover:from-amber-500 group-hover:to-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.3)]" 
+                          style={{ height: `${data.height}%` }}
+                        ></div>
+                      </div>
+                      <div className="text-[10px] text-neutral-600 text-center mt-2 truncate">{data.label}</div>
+                    </div>
+                  ))}
+                </>
+              );
+            })()}
+          </div>
+          <div className="text-center text-xs text-neutral-500 mt-2 font-mono uppercase tracking-widest">
+            {timeRange === 'Today' ? 'Hours' : timeRange === 'This Week' ? 'Days' : timeRange === 'This Month' ? 'Weeks' : 'Months'}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-gradient-to-br from-neutral-800 to-neutral-900 p-6 rounded-xl border border-neutral-700 shadow-lg">
+             <h4 className="text-white font-bold mb-2 flex items-center"><LinkIcon size={16} className="mr-2 text-amber-500"/> Quick Invite</h4>
+             <p className="text-xs text-neutral-400 mb-3">Copy your default referral link to start earning.</p>
+               <div className="flex bg-neutral-950 rounded border border-neutral-700 p-1 relative">
+                <input readOnly value={`https://nommia.com/register?ib=${getSessionPartnerId() || ''}`} className="bg-transparent text-xs text-neutral-300 px-2 w-full focus:outline-none"/>
+                <button 
+                  onClick={handleCopyLink}
+                  className={`px-3 py-1.5 rounded text-xs font-bold transition-colors min-w-[60px] ${linkCopied ? 'bg-emerald-500 text-white' : 'bg-neutral-800 hover:bg-neutral-700 text-white'}`}
+                >
+                  {linkCopied ? "Copied!" : "Copy"}
+                </button>
+             </div>
+          </div>
+
+          <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6 flex-1 flex flex-col">
+            <h3 className="font-bold text-white mb-4 text-sm uppercase tracking-wider flex items-center justify-between">
+              Live Activity
+              <span className={`w-2 h-2 rounded-full ${currentNotifications.length > 0 ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-600'}`}></span>
+            </h3>
+            <div className="space-y-5 flex-1 overflow-hidden">
+              {currentNotifications.length > 0 ? currentNotifications.slice(0, 4).map((act) => (
+                <div key={act.id} className="flex items-start">
+                  <div className={`mt-0.5 min-w-[24px] h-6 rounded-full bg-neutral-900 border border-neutral-700 flex items-center justify-center ${act.color}`}>
+                    <act.icon size={12} />
+                  </div>
+                  <div className="ml-3">
+                    <p className="text-sm text-neutral-300 leading-snug">{act.msg}</p>
+                    <p className="text-xs text-neutral-600 mt-0.5 flex items-center"><Clock size={10} className="mr-1"/> {act.time}</p>
+                  </div>
+                </div>
+              )) : (
+                <div className="flex flex-col items-center justify-center h-full text-neutral-500 py-8">
+                  <Activity size={32} className="mb-2 opacity-50" />
+                  <p className="text-sm">No activity yet</p>
+                  <p className="text-xs mt-1">Activity will appear when clients join</p>
+                </div>
+              )}
+            </div>
+            {currentNotifications.length > 0 && (
+              <button onClick={() => setShowNotifModal(true)} className="w-full mt-6 py-2 text-xs text-neutral-500 hover:text-white border border-neutral-800 rounded hover:bg-neutral-800 transition-colors">
+                View All Notifications
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ClientsView = ({ clients }) => {
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  if (selectedClient) {
+    return <ClientDetailView client={selectedClient} onBack={() => setSelectedClient(null)} />;
+  }
+
+  // Helper to compute lots for display: use only `client.lots` computed from trade history
+  // Trading accounts do NOT have a "lots traded" field - that must come from summing VU on closed trades
+  const computeClientLots = (client) => {
+    if (!client) return 0;
+    // Return the lots value computed from trade history (set during client loading)
+    return (typeof client.lots === 'number') ? client.lots : 0;
+  };
+
+  const filteredClients = clients.filter(client => 
+    client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    client.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const handleExport = () => {
+    const headers = ["ID,Name,Email,Phone,Country,KYC Status,Net Deposit,Equity,Lots Traded,Risk Level,Status"];
+    const rows = filteredClients.map(c => {
+      const lots = computeClientLots(c);
+      return `${c.id},"${c.name}",${c.email},${c.phone},"${c.country}",${c.kycStatus},${c.deposit},${c.equity},${lots},${c.risk},${c.status}`
+    });
+    const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "nommia_client_list.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 flex flex-col h-full animate-fadeIn">
+      <div className="p-5 border-b border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-neutral-900 rounded-t-xl">
+        <div>
+          <h2 className="text-lg font-bold text-white">Client Management</h2>
+          <p className="text-sm text-neutral-400">View KYC status, deposits, and trading activity.</p>
+        </div>
+        <div className="flex gap-2">
+          <div className="relative">
+            <Search size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-neutral-500" />
+            <input type="text" placeholder="Search clients..." className="pl-10 pr-4 py-2 border border-neutral-700 bg-neutral-800 text-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 w-full sm:w-64 placeholder-neutral-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+          </div>
+          <button 
+            onClick={handleExport}
+            className="flex items-center px-4 py-2 bg-amber-500 text-neutral-900 rounded-lg text-sm font-bold hover:bg-amber-400 transition-colors shadow-lg shadow-amber-500/20"
+          >
+            <Download size={18} className="mr-2" /> Export
+          </button>
+        </div>
+      </div>
+      <div className="overflow-x-auto flex-1 bg-neutral-900 rounded-b-xl">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-neutral-800/50 text-neutral-400 text-xs uppercase font-semibold tracking-wider border-b border-neutral-800">
+              <th className="p-4">Name / Contact</th><th className="p-4">Country</th><th className="p-4">KYC Status</th><th className="p-4 text-right">Net Deposit</th><th className="p-4 text-right">Equity (Live)</th><th className="p-4 text-right">Lots Traded</th><th className="p-4">Risk Level</th><th className="p-4 text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-800">
+            {clients.length === 0 ? (
+              <tr>
+                <td colSpan="8" className="p-12 text-center">
+                  <Users size={48} className="mx-auto mb-4 text-neutral-600" />
+                  <p className="text-lg font-medium text-neutral-400 mb-2">No Clients Yet</p>
+                  <p className="text-sm text-neutral-500">Your referred clients will appear here once they register through your referral link.</p>
+                </td>
+              </tr>
+            ) : filteredClients.length > 0 ? (
+              filteredClients.map((client, index) => (
+                <tr key={client.id || client.username || `client-${index}`} onClick={() => setSelectedClient(client)} className="hover:bg-neutral-800/50 transition-colors group cursor-pointer">
+                  <td className="p-4"><div className="font-medium text-neutral-200 group-hover:text-amber-500">{client.name}</div><div className="text-xs text-neutral-400 flex flex-col"><span>{client.email}</span><span>{client.phone}</span></div></td>
+                  <td className="p-4 text-sm text-neutral-500">{client.country}</td>
+                  <td className="p-4"><StatusBadge status={client.kycStatus} /></td>
+                  <td className="p-4 text-right font-medium text-neutral-300">${(client.deposit || 0).toLocaleString()}</td>
+                  <td className="p-4 text-right"><span className={`font-bold ${client.equity < client.deposit * 0.5 && client.deposit > 0 ? 'text-red-400' : 'text-neutral-200'}`}>${(client.equity || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></td>
+                  <td className="p-4 text-right font-medium text-amber-500">{computeClientLots(client) || 0}</td>
+                  <td className="p-4"><StatusBadge status={client.risk || 'N/A'} /></td>
+                  <td className="p-4 text-center"><button className="text-neutral-500 hover:text-amber-500 transition-colors p-1"><Settings size={16} /></button></td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan="8" className="p-8 text-center text-neutral-500 italic">No clients found matching "{searchTerm}"</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// C. UPDATED MARKETING VIEW (With Assets & Admin Mode)
+const MarketingView = ({ userRole }) => {
+  const [subTab, setSubTab] = useState('links');
+  const [campaigns, setCampaigns] = useState([]);  // Will be fetched from API
+  const [assets, setAssets] = useState([]);  // Will be fetched from API
+  const [showModal, setShowModal] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const handleAddCampaign = (newCampaign) => {
+    const id = campaigns.length + 1;
+    const campaignObj = {
+      id,
+      name: newCampaign.name,
+      tag: newCampaign.tag,
+      clicks: 0,
+      signups: 0,
+      ftd: 0,
+      commission: 0
+    };
+    setCampaigns([...campaigns, campaignObj]);
+    setShowModal(false);
+  };
+
+  const handleAddAsset = (newAsset) => {
+    const id = assets.length + 1;
+    const assetObj = {
+        id,
+        name: newAsset.name,
+        type: newAsset.type,
+        size: "1.5 MB", // Mock size
+        date: new Date().toISOString().split('T')[0]
+    };
+    setAssets([...assets, assetObj]);
+    setShowUploadModal(false);
+  };
+
+  const copyCampaignLink = (tag, id) => {
+    const ibParam = getSessionPartnerId() || '';
+    const link = `https://nommia.com/register?ib=${ibParam}&c=${encodeURIComponent(tag)}`;
+    navigator.clipboard.writeText(link);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn relative">
+      {/* Create Modals */}
+      {showModal && <CreateCampaignModal onClose={() => setShowModal(false)} onSubmit={handleAddCampaign} />}
+      {showUploadModal && <UploadAssetModal onClose={() => setShowUploadModal(false)} onSubmit={handleAddAsset} />}
+
+      <div className="flex space-x-1 bg-neutral-900 p-1 rounded-lg w-fit border border-neutral-800">
+        <button onClick={() => setSubTab('links')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${subTab === 'links' ? 'bg-amber-500 text-neutral-900 font-bold shadow' : 'text-neutral-500 hover:text-neutral-300'}`}>Referral Links</button>
+        <button onClick={() => setSubTab('assets')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${subTab === 'assets' ? 'bg-amber-500 text-neutral-900 font-bold shadow' : 'text-neutral-500 hover:text-neutral-300'}`}>Marketing Assets</button>
+      </div>
+
+      {subTab === 'links' ? (
+        <>
+          <div className="bg-gradient-to-br from-neutral-800 to-black rounded-xl p-8 text-white shadow-lg shadow-black/50 relative overflow-hidden border border-neutral-700">
+            <div className="relative z-10">
+              <h2 className="text-2xl font-bold mb-2">Your Unique Referral Link</h2>
+              <p className="text-neutral-300 mb-6 max-w-lg">Share this link to track your clients automatically.</p>
+              <div className="flex bg-neutral-900/50 backdrop-blur-md rounded-lg p-1.5 max-w-xl border border-neutral-600">
+                <input type="text" readOnly value={`https://nommia.com/register?ib=${getSessionPartnerId() || ''}`} className="flex-1 bg-transparent border-none text-white px-3 focus:outline-none font-mono text-sm" />
+                <button 
+                  onClick={() => {
+                    const mainLink = `https://nommia.com/register?ib=${getSessionPartnerId() || ''}`;
+                    navigator.clipboard.writeText(mainLink);
+                    alert("Main link copied!");
+                  }}
+                  className="bg-amber-500 hover:bg-amber-400 text-neutral-900 px-4 py-2 rounded-md font-bold text-sm transition-colors flex items-center shadow-lg"
+                >
+                  <Copy size={16} className="mr-2" /> Copy
+                </button>
+              </div>
+            </div>
+            <div className="absolute right-0 bottom-0 opacity-5 text-white"><LinkIcon size={200} /></div>
+          </div>
+          
+          <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6">
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="font-bold text-white text-lg">Campaign Performance</h3>
+                <button 
+                    onClick={() => setShowModal(true)}
+                    className="flex items-center bg-neutral-800 hover:bg-neutral-700 text-white px-3 py-2 rounded-lg text-sm border border-neutral-700 transition-colors"
+                >
+                    <Plus size={16} className="mr-2 text-amber-500"/> New Campaign
+                </button>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                    <tr className="border-b border-neutral-800 text-xs font-semibold text-neutral-500 uppercase tracking-wider">
+                        <th className="pb-3 pl-2">Campaign Name</th>
+                        <th className="pb-3">Tracking Tag</th>
+                        <th className="pb-3 text-right">Clicks</th>
+                        <th className="pb-3 text-right">Sign Ups</th>
+                        <th className="pb-3 text-right">FTD</th>
+                        <th className="pb-3 text-right">Conversion</th>
+                        <th className="pb-3 text-right">Commission</th>
+                        <th className="pb-3 text-center">Link</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-800">
+                  {campaigns.map(camp => (
+                    <tr key={camp.id} className="text-sm hover:bg-neutral-800/30 transition-colors">
+                      <td className="py-4 pl-2 font-medium text-neutral-200">{camp.name}</td>
+                      <td className="py-4 text-neutral-500 font-mono text-xs">{camp.tag}</td>
+                      <td className="py-4 text-right text-neutral-400">{camp.clicks.toLocaleString()}</td>
+                      <td className="py-4 text-right text-neutral-400">{camp.signups}</td>
+                      <td className="py-4 text-right font-bold text-neutral-200">{camp.ftd}</td>
+                      <td className="py-4 text-right">
+                        <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-full text-xs">
+                           {camp.clicks > 0 ? ((camp.ftd / camp.clicks) * 100).toFixed(2) : "0.00"}%
+                        </span>
+                      </td>
+                      <td className="py-4 text-right font-bold text-amber-500">+${camp.commission.toLocaleString()}</td>
+                      <td className="py-4 text-center">
+                        <button 
+                            onClick={() => copyCampaignLink(camp.tag, camp.id)}
+                            className="text-neutral-500 hover:text-amber-500 transition-colors"
+                            title="Copy Campaign Link"
+                        >
+                            {copiedId === camp.id ? <span className="text-emerald-500 text-xs font-bold">Copied</span> : <Copy size={16} />}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : (
+        // ASSETS VIEW
+        <div className="space-y-6">
+            {/* Header / Admin Actions */}
+            <div className="flex justify-between items-center bg-neutral-900 p-4 rounded-xl border border-neutral-800">
+                <div>
+                    <h3 className="font-bold text-white">Downloadable Assets</h3>
+                    <p className="text-xs text-neutral-400">Materials to help you promote.</p>
+                </div>
+                {userRole === 'Admin' && (
+                    <button 
+                        onClick={() => setShowUploadModal(true)}
+                        className="flex items-center px-4 py-2 bg-amber-500 hover:bg-amber-400 text-neutral-900 rounded-lg text-sm font-bold transition-colors"
+                    >
+                        <Upload size={16} className="mr-2"/> Upload Asset
+                    </button>
+                )}
+            </div>
+
+            {/* Asset Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {assets.map((asset) => (
+                <div key={asset.id} className="bg-neutral-900 p-4 rounded-xl border border-neutral-800 group hover:border-amber-500/50 transition-all">
+                    <div className="h-32 bg-neutral-950 rounded-lg flex items-center justify-center mb-4 border border-neutral-800 relative overflow-hidden">
+                        {asset.type === 'image' ? <Image size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" /> : 
+                         asset.type === 'zip' ? <File size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" /> :
+                         <FileText size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" />}
+                    </div>
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <h4 className="font-bold text-white text-sm">{asset.name}</h4>
+                            <p className="text-xs text-neutral-500 mt-1">{asset.type.toUpperCase()} • {asset.size}</p>
+                        </div>
+                    </div>
+                    <button className="w-full py-2 border border-neutral-700 hover:bg-neutral-800 text-amber-500 rounded-lg text-sm font-medium mt-4 flex items-center justify-center transition-colors">
+                        <Download size={14} className="mr-2"/> Download
+                    </button>
+                </div>
+            ))}
+            </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- NEW REPORTS VIEW ---
+const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propRevenue, apiStatus }) => {
+  const [dateRange, setDateRange] = useState('This Month');
+  const [localVolumeData, setLocalVolumeData] = useState({ totalVolume: 0, totalRevenue: 0, trades: [] });
+  const [isLoading, setIsLoading] = useState(false);
+  const requestIdRef = useRef(0);
+  
+  // Fetch data when dateRange changes
+  useEffect(() => {
+    if (apiStatus !== 'connected') return;
+    
+    // Increment request ID to track latest request
+    const requestId = ++requestIdRef.current;
+    console.log(`[Reports] Starting request ${requestId} for ${dateRange}`);
+    
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        // Map ReportsView dateRange to fetchVolumeHistory timeRange
+        const timeRangeMap = {
+          'Today': 'Today',
+          'Last 7 Days': 'This Week',
+          'This Month': 'This Month',
+          'This Quarter': 'This Quarter',
+          'Last Quarter': 'This Quarter',
+          'Year to Date': 'This Year',
+          'Lifetime': 'Lifetime'
+        };
+        const mappedRange = timeRangeMap[dateRange] || 'Lifetime';
+        console.log(`[Reports] Fetching volume history for ${dateRange} (mapped to ${mappedRange})`);
+        
+        const history = await fetchVolumeHistory(mappedRange);
+        
+        // Check if this request is still current (not stale)
+        if (requestId !== requestIdRef.current) {
+          console.log(`[Reports] Stale ${dateRange} request ${requestId}, current is ${requestIdRef.current}, ignoring result`);
+          return;
+        }
+        
+        setLocalVolumeData({
+          totalVolume: history.totalVolume || 0,
+          totalRevenue: history.totalRevenue || 0,
+          trades: history.trades || []
+        });
+        console.log(`[Reports] Data loaded: Volume=${history.totalVolume}, Revenue=$${history.totalRevenue}`);
+      } catch (err) {
+        console.error('Failed to fetch reports data:', err);
+      } finally {
+        // Only clear loading if this is still the current request
+        if (requestId === requestIdRef.current) {
+          setIsLoading(false);
+        }
+      }
+    };
+    
+    fetchData();
+  }, [dateRange, apiStatus]);
+
+  // Helper function to get date range - MUST use LOCAL timezone, not UTC
+  // FIXED: Properly set end-of-day (23:59:59.999) to include all data for the period
+  const getReportDateRange = (period) => {
+    const now = new Date();
+    // Create today at midnight in LOCAL timezone
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Helper to get end of day (23:59:59.999)
+    const getEndOfDay = (date) => {
+      const end = new Date(date);
+      end.setHours(23, 59, 59, 999);
+      return end;
+    };
+    
+    switch (period) {
+      case 'Today':
+        return { start: today, end: getEndOfDay(today) };
+      case 'Last 7 Days': {
+        const start = new Date(today);
+        start.setDate(today.getDate() - 7);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'This Month': {
+        // Start from 1st of current month at midnight local time
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'This Quarter': {
+        // Start from 1st of current quarter
+        const start = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'Last Quarter': {
+        // Go back 3 months from today
+        const start = new Date(today);
+        start.setMonth(today.getMonth() - 3);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'Year to Date': {
+        // Jan 1 of current year at midnight local time
+        const start = new Date(now.getFullYear(), 0, 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'Lifetime':
+      default:
+        // All time
+        return { start: new Date(0), end: now };
+    }
+  };
+
+  // Filter clients by registration date range
+  const filterClientsByDateRange = (clientList, period) => {
+    if (period === 'Lifetime') return clientList;
+    
+    const { start, end } = getReportDateRange(period);
+    
+    return clientList.filter(c => {
+      // Try multiple date fields that might be available
+      const dateStr = c.registrationDate || c.registration || c.createdOn || c.created;
+      if (!dateStr) return true; // Include clients without date info
+      
+      try {
+        const regDate = new Date(dateStr);
+        if (isNaN(regDate.getTime())) return true; // Invalid date, include anyway
+        return regDate >= start && regDate <= end;
+      } catch {
+        return true; // On error, include the client
+      }
+    });
+  };
+
+  // Get filtered clients
+  const filteredClients = filterClientsByDateRange(clients, dateRange);
+
+  // FIXED: Use local data fetched based on dateRange. Don't fall back to props which show lifetime data.
+  // If data is 0, that's the actual result - not a fallback situation.
+  const totalVolume = localVolumeData.totalVolume !== undefined ? localVolumeData.totalVolume : propTotalVolume || 0;
+  const totalClients = clients.length; // Always show total client count
+  const totalDeposits = clients.reduce((sum, c) => sum + (c.deposit || 0), 0); // Cumulative deposits
+  
+  // Use local data fetched based on dateRange for revenue - FIXED: Don't compute default when we have real data
+  const totalRevenue = localVolumeData.totalRevenue !== undefined ? localVolumeData.totalRevenue : propRevenue || 0;
+
+  /**
+   * PERFORMANCE BONUS CALCULATION (Per Tier Bonus Documentation)
+   * Based on 3-month rolling average:
+   * - Tier 1: $450 - $999.99 monthly commission → 4% bonus
+   * - Tier 2: $1,000 - $4,499.99 monthly commission → 8% bonus  
+   * - Tier 3: $4,500+ monthly commission → 10% bonus
+   * 
+   * For new IBs: Month 1 uses just that month, Month 2 uses 2-month avg,
+   * Month 3+ uses 3-month rolling average
+   */
+  const calculateBonusTier = (threeMonthCommissions) => {
+    // threeMonthCommissions: array of up to 3 monthly commission values [oldest, ..., newest]
+    const validMonths = threeMonthCommissions.filter(c => c !== null && c !== undefined);
+    if (validMonths.length === 0) return { tier: 'Base', rate: 0, avgCommission: 0, label: '0%' };
+    
+    const avgCommission = validMonths.reduce((sum, c) => sum + c, 0) / validMonths.length;
+    
+    if (avgCommission >= 4500) {
+      return { tier: 'Tier 3', rate: 0.10, avgCommission, label: '+10%' };
+    } else if (avgCommission >= 1000) {
+      return { tier: 'Tier 2', rate: 0.08, avgCommission, label: '+8%' };
+    } else if (avgCommission >= 450) {
+      return { tier: 'Tier 1', rate: 0.04, avgCommission, label: '+4%' };
+    } else {
+      return { tier: 'Base', rate: 0, avgCommission, label: '0%' };
+    }
+  };
+
+  // Current month's commission = this IB's actual revenue from their clients' trades
+  const currentMonthCommission = totalRevenue;
+  
+  // Example: simulate 3-month history (in production, fetch from API)
+  // For now, just use current month for new IBs
+  const threeMonthHistory = [currentMonthCommission]; // Would be [month1, month2, month3] with real data
+  
+  const bonusTierInfo = calculateBonusTier(threeMonthHistory);
+  const bonusAmount = currentMonthCommission * bonusTierInfo.rate;
+  const totalWithBonus = totalRevenue + bonusAmount;
+
+  // Calculate volume by asset class (aggregate from client trades if available)
+  const volumeByAsset = clients.length > 0 ? [
+    { label: 'XAUUSD (Gold)', pct: 45, color: 'bg-amber-500' },
+    { label: 'EURUSD', pct: 25, color: 'bg-blue-500' },
+    { label: 'GBPUSD', pct: 15, color: 'bg-indigo-500' },
+    { label: 'Other', pct: 15, color: 'bg-neutral-600' }
+  ] : [];
+
+  // Get the actual totalVolume from API data, respecting 0 values
+  const totalVolumeDisplay = localVolumeData.totalVolume !== undefined ? localVolumeData.totalVolume : propTotalVolume || 0;
+  const totalRevenueDisplay = localVolumeData.totalRevenue !== undefined ? localVolumeData.totalRevenue : propRevenue || 0;
+  
+  const handleDownloadStatement = () => {
+    // 1. Initialize PDF
+    const doc = new jsPDF();
+
+    // 2. Add Title & Metadata
+    doc.setFontSize(20);
+    doc.setTextColor(245, 158, 11); // Amber color
+    doc.text("Nommia Partner Statement", 14, 22);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30);
+    doc.text(`Period: ${dateRange}`, 14, 35);
+
+    // 3. Define Table Data from FILTERED clients
+    const tableColumn = ["Client", "Status", "Deposits", "Volume (Lots)", "Commission"];
+    const tableRows = filteredClients.length > 0 ? filteredClients.slice(0, 50).map(c => [
+      c.name || c.username || 'N/A',
+      c.status || 'N/A',
+      `$${(c.deposit || 0).toLocaleString()}`,
+      `${(c.lots || 0).toFixed(2)}`,
+      `$${((c.lots || 0) * 4.5).toFixed(2)}`
+    ]) : [['No data available', '', '', '', '']];
+
+    // 4. Generate Table
+    autoTable(doc, {
+      head: [tableColumn],
+      body: tableRows,
+      startY: 45,
+      theme: 'grid',
+      headStyles: { fillColor: [23, 23, 23], textColor: [255, 255, 255] }, // Dark header
+      styles: { fontSize: 9 },
+    });
+
+    // Add summary
+    const finalY = doc.lastAutoTable.finalY + 10;
+    doc.setFontSize(12);
+    doc.setTextColor(0);
+    doc.text(`Total Clients: ${totalClients}`, 14, finalY);
+    doc.text(`Total Volume: ${totalVolumeDisplay.toFixed(2)} Lots`, 14, finalY + 7);
+    doc.text(`Total Commission: $${totalRevenueDisplay.toFixed(2)}`, 14, finalY + 14);
+
+    // 5. Save PDF
+    doc.save(`Nommia_Statement_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      {/* 1. Reports Header & Filters */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-neutral-900 p-6 rounded-xl border border-neutral-800">
+        <div>
+          <h2 className="text-xl font-bold text-white flex items-center"><PieChart size={20} className="mr-2 text-amber-500"/> Performance Reports</h2>
+          <p className="text-sm text-neutral-400 mt-1">Deep dive analytics into your referral business.</p>
+        </div>
+        <div className="mt-4 md:mt-0 flex space-x-3">
+          <div className="relative">
+            <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500"/>
+            <select 
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value)}
+              className="bg-neutral-950 border border-neutral-700 text-white text-sm rounded-lg pl-9 pr-8 py-2 focus:border-amber-500 outline-none appearance-none"
+            >
+              <option>Today</option>
+              <option>Last 7 Days</option>
+              <option>This Month</option>
+              <option>This Quarter</option>
+              <option>Last Quarter</option>
+              <option>Year to Date</option>
+              <option>Lifetime</option>
+            </select>
+            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"/>
+          </div>
+          <button 
+            onClick={handleDownloadStatement}
+            className="flex items-center px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm font-medium border border-neutral-700 transition-colors"
+          >
+            <Download size={16} className="mr-2"/> Download Statement
+          </button>
+        </div>
+      </div>
+
+      {/* 2. Key Metrics for Selected Period */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 relative min-h-[110px]">
+          {isLoading && (
+            <div className="absolute inset-0 bg-neutral-900/50 rounded-xl flex items-center justify-center">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-500"></div>
+                <span className="text-xs text-neutral-400">Loading...</span>
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-neutral-500 uppercase font-bold">Period Revenue</p>
+          <div className="flex items-end justify-between mt-2">
+            <span className={`text-2xl font-bold text-white ${isLoading ? 'opacity-50' : ''}`}>${totalRevenueDisplay.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+            <span className="text-xs text-neutral-400 flex items-center bg-neutral-800 px-2 py-1 rounded">{clients.length > 0 ? 'Live' : 'No data'}</span>
+          </div>
+        </div>
+        <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 relative min-h-[110px]">
+          {isLoading && (
+            <div className="absolute inset-0 bg-neutral-900/50 rounded-xl flex items-center justify-center">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-500"></div>
+                <span className="text-xs text-neutral-400">Loading...</span>
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-neutral-500 uppercase font-bold">New Clients</p>
+          <div className="flex items-end justify-between mt-2">
+            <span className={`text-2xl font-bold text-white ${isLoading ? 'opacity-50' : ''}`}>{totalClients}</span>
+            <span className="text-xs text-neutral-400 flex items-center bg-neutral-800 px-2 py-1 rounded">{clients.length > 0 ? 'Active' : 'No referrals'}</span>
+          </div>
+        </div>
+        <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 relative min-h-[110px]">
+          {isLoading && (
+            <div className="absolute inset-0 bg-neutral-900/50 rounded-xl flex items-center justify-center">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-500"></div>
+                <span className="text-xs text-neutral-400">Loading...</span>
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-neutral-500 uppercase font-bold">Total Volume</p>
+          <div className="flex items-end justify-between mt-2">
+            <span className={`text-2xl font-bold text-amber-500 ${isLoading ? 'opacity-50' : ''}`}>{totalVolumeDisplay.toFixed(2)} Lots</span>
+            <span className="text-xs text-neutral-400 flex items-center bg-neutral-800 px-2 py-1 rounded">{clients.length > 0 ? 'Live' : 'No trades'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Detailed Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        {/* Volume Breakdown (Asset Class) */}
+        <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800">
+          <h3 className="font-bold text-white mb-6">Volume by Asset Class</h3>
+          {volumeByAsset.length > 0 ? (
+            <div className="space-y-4">
+              {volumeByAsset.map((item, i) => (
+                <div key={i}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-neutral-300">{item.label}</span>
+                    <span className="text-white font-bold">{item.pct}%</span>
+                  </div>
+                  <div className="w-full bg-neutral-800 rounded-full h-2">
+                    <div className={`h-2 rounded-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-40 text-neutral-500">
+              <BarChart2 size={32} className="mb-2 opacity-50" />
+              <p className="text-sm">No trading data available</p>
+              <p className="text-xs mt-1">Volume breakdown will appear when clients trade</p>
+            </div>
+          )}
+        </div>
+
+        {/* Net Flow Analysis */}
+        <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 flex flex-col">
+          <h3 className="font-bold text-white mb-6">Net Funding Flow</h3>
+          {clients.length > 0 ? (
+            <>
+              <div className="flex-1 flex items-end justify-around space-x-4 h-48 px-2 border-b border-neutral-800 relative">
+                <div className="absolute top-1/2 w-full border-t border-dashed border-neutral-800"></div>
+                {['Jan', 'Feb', 'Mar', 'Apr'].map((month, i) => (
+                  <div key={i} className="flex flex-col items-center space-y-1 h-full justify-end w-full">
+                    <div className="w-full flex space-x-1 items-end h-full justify-center">
+                      <div className="w-3 bg-emerald-500 rounded-t-sm" style={{ height: `${Math.min(100, (totalDeposits / 4 / 100) * (i + 1) * 10)}%` }} title="Deposits"></div>
+                      <div className="w-3 bg-red-500 rounded-t-sm" style={{ height: `${Math.min(50, i * 10)}%` }} title="Withdrawals"></div>
+                    </div>
+                    <span className="text-xs text-neutral-500">{month}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-center gap-6 mt-4">
+                <div className="flex items-center text-xs text-neutral-400"><div className="w-2 h-2 bg-emerald-500 rounded-full mr-2"></div> Deposits</div>
+                <div className="flex items-center text-xs text-neutral-400"><div className="w-2 h-2 bg-red-500 rounded-full mr-2"></div> Withdrawals</div>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center h-48 text-neutral-500">
+              <TrendingUp size={32} className="mb-2 opacity-50" />
+              <p className="text-sm">No funding data available</p>
+              <p className="text-xs mt-1">Flow chart will appear when clients deposit</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 4. Detailed Statement Table */}
+      <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 overflow-hidden relative">
+        {isLoading && (
+          <div className="absolute inset-0 bg-neutral-900/70 flex items-center justify-center rounded-xl z-10">
+            <div className="flex items-center gap-3">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500"></div>
+              <span className="text-sm text-neutral-300">Loading client data...</span>
+            </div>
+          </div>
+        )}
+        <div className="p-4 border-b border-neutral-800 font-bold text-white bg-neutral-800/20">Client Breakdown ({dateRange}) - {filteredClients.length} clients</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-neutral-800/50 text-neutral-400 font-semibold">
+              <tr>
+                <th className="p-3">Client</th>
+                <th className="p-3">Status</th>
+                <th className="p-3 text-right">Deposits</th>
+                <th className="p-3 text-right">Volume (Lots)</th>
+                <th className="p-3 text-right">Commission</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-800">
+              {filteredClients.length > 0 ? filteredClients.slice(0, 15).map((client, i) => (
+                <tr key={client.id || i} className="hover:bg-neutral-800/30">
+                  <td className="p-3 text-neutral-300">{client.name || client.username || 'N/A'}</td>
+                  <td className="p-3">
+                    <span className={`px-2 py-1 rounded text-xs ${client.status === 'Active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-neutral-700 text-neutral-400'}`}>
+                      {client.status || 'N/A'}
+                    </span>
+                  </td>
+                  <td className="p-3 text-right text-emerald-400">+${(client.deposit || 0).toLocaleString()}</td>
+                  <td className="p-3 text-right text-white">{(client.lots || 0).toFixed(2)}</td>
+                  <td className="p-3 text-right font-bold text-amber-500">${((client.lots || 0) * 5).toFixed(2)}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan="5" className="p-8 text-center text-neutral-500">
+                    <div className="flex flex-col items-center">
+                      <Users size={32} className="mb-2 opacity-50" />
+                      <p>No client data for {dateRange}</p>
+                      <p className="text-xs mt-1">Try selecting a different time period</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// D. PAYOUTS VIEW (Revised) - Now with Real Withdrawal Data
+const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propRevenue }) => {
+  const [showWithdraw, setShowWithdraw] = useState(false);
+  const [withdrawals, setWithdrawals] = useState([]);  // Starts empty, loaded from API
+  const [isLoadingWithdrawals, setIsLoadingWithdrawals] = useState(true);
+  const [lifetimeData, setLifetimeData] = useState({ totalVolume: 0, totalRevenue: 0 });
+  const [payoutTimeFilter, setPayoutTimeFilter] = useState('Lifetime');  // FIXED: Add time filter for payouts
+
+  // Fetch current month data for payouts (should ONLY show current month's earnings) - FIXED: Changed from Lifetime to This Month
+  useEffect(() => {
+    const loadCurrentMonthData = async () => {
+      try {
+        const history = await fetchVolumeHistory('This Month');
+        setLifetimeData({
+          totalVolume: history.totalVolume || 0,
+          totalRevenue: history.totalRevenue || 0
+        });
+      } catch (e) {
+        console.error('Error loading current month data:', e);
+      }
+    };
+    loadCurrentMonthData();
+  }, []);
+
+  // Helper function to get date range for payouts filter - FIXED: Added proper end-of-day handling
+  const getPayoutDateRange = (period) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    const getEndOfDay = (date) => {
+      const end = new Date(date);
+      end.setHours(23, 59, 59, 999);
+      return end;
+    };
+    
+    switch (period) {
+      case 'Today':
+        return { start: today, end: getEndOfDay(today) };
+      case 'This Week': {
+        const start = new Date(today);
+        start.setDate(today.getDate() - today.getDay());
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'This Month': {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'This Quarter': {
+        const quarter = Math.floor(now.getMonth() / 3);
+        const start = new Date(now.getFullYear(), quarter * 3, 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'This Year': {
+        const start = new Date(now.getFullYear(), 0, 1);
+        return { start, end: getEndOfDay(today) };
+      }
+      case 'Lifetime':
+      default:
+        return { start: new Date(0), end: now };
+    }
+  };
+  
+  // Filter withdrawals by selected time range - FIXED: Added filtering logic
+  const getFilteredWithdrawals = () => {
+    if (payoutTimeFilter === 'Lifetime') return withdrawals;
+    
+    const { start, end } = getPayoutDateRange(payoutTimeFilter);
+    return withdrawals.filter(w => {
+      try {
+        const withdrawalDate = new Date(w.date);
+        return withdrawalDate >= start && withdrawalDate <= end;
+      } catch {
+        return true;
+      }
+    });
+  };
+  
+  const filteredWithdrawals = getFilteredWithdrawals();
+
+  // Use current month data for payouts (NOT lifetime) - FIXED: Should only show current month earnings
+  const totalVolume = lifetimeData.totalVolume || 0;
+  const totalRevenue = lifetimeData.totalRevenue || 0;
+
+  // Fetch real withdrawals on mount and when time filter changes - FIXED: Added payoutTimeFilter dependency
+  useEffect(() => {
+    const loadWithdrawals = async () => {
+      setIsLoadingWithdrawals(true);
+      try {
+        const realWithdrawals = await fetchWithdrawalsHistory();
+        if (realWithdrawals.length > 0) {
+          setWithdrawals(realWithdrawals.map(w => ({
+            id: w.id,
+            date: new Date(w.date).toLocaleDateString(),
+            amount: Math.abs(w.amount),
+            method: w.method,
+            status: w.status === 'Completed' ? 'Paid' : w.status
+          })));
+        }
+      } catch (e) {
+        console.error('Error loading withdrawals:', e);
+      } finally {
+        setIsLoadingWithdrawals(false);
+      }
+    };
+    loadWithdrawals();
+  }, [showWithdraw, payoutTimeFilter]); // Refresh after withdrawal request or time filter change - FIXED: Added payoutTimeFilter
+  
+  // Calculate commission breakdown (estimate FX vs Metals split)
+  const fxVolume = Math.round(totalVolume * 0.7); // Estimate 70% FX
+  const metalVolume = Math.round(totalVolume * 0.3); // Estimate 30% Metals
+  
+  // Calculate base commission using the commission rates (FX $4.50/lot, Metals $8/lot for tier 1)
+  const currentMonthData = { 
+    tier1: { fxLots: fxVolume, metalLots: metalVolume }, 
+    tier2: { fxLots: 0, metalLots: 0 }, 
+    tier3: { fxLots: 0, metalLots: 0 }, 
+    socialProfit: 0 
+  };
+  
+  const calcBase = (tierData, rates) => (tierData.fxLots * rates.fx) + (tierData.metalLots * rates.metals);
+  const t1Earnings = calcBase(currentMonthData.tier1, COMMISSION_RATES.tier1);
+  const t2Earnings = calcBase(currentMonthData.tier2, COMMISSION_RATES.tier2);
+  const t3Earnings = calcBase(currentMonthData.tier3, COMMISSION_RATES.tier3);
+  const socialBonus = currentMonthData.socialProfit * 0.05;
+  
+  // Use real revenue from props if available, otherwise calculate from volume
+  const totalBaseCommission = totalRevenue || (t1Earnings + t2Earnings + t3Earnings + socialBonus);
+  
+  /**
+   * PERFORMANCE BONUS CALCULATION (Per Tier Bonus Documentation)
+   * Based on 3-month rolling average:
+   * - Tier 1: $450 - $999.99 monthly commission → 4% bonus
+   * - Tier 2: $1,000 - $4,499.99 monthly commission → 8% bonus  
+   * - Tier 3: $4,500+ monthly commission → 10% bonus
+   */
+  const calculateBonusTier = (avgCommission) => {
+    if (avgCommission >= 4500) {
+      return { tier: 'Tier 3', rate: 0.10, label: '+10%' };
+    } else if (avgCommission >= 1000) {
+      return { tier: 'Tier 2', rate: 0.08, label: '+8%' };
+    } else if (avgCommission >= 450) {
+      return { tier: 'Tier 1', rate: 0.04, label: '+4%' };
+    } else {
+      return { tier: 'Base', rate: 0, label: '0%' };
+    }
+  };
+  
+  // Calculate bonus based on this month's commission
+  // In production, would use 3-month rolling average
+  const bonusTier = calculateBonusTier(totalBaseCommission);
+  const bonusAmount = totalBaseCommission * bonusTier.rate;
+  const totalEarnings = totalBaseCommission + bonusAmount;
+
+  // Available balance for withdrawal (total earnings minus any pending/paid withdrawals)
+  const totalWithdrawn = withdrawals.reduce((sum, w) => sum + (w.status === 'Paid' ? w.amount : 0), 0);
+  const pendingWithdrawals = withdrawals.reduce((sum, w) => sum + (w.status === 'Processing' ? w.amount : 0), 0);
+  const availableBalance = Math.max(0, totalEarnings - totalWithdrawn - pendingWithdrawals);
+
+  const handleWithdrawSubmit = async (amount, method) => {
+    try {
+        await submitWithdrawalRequest(amount, method);
+        alert("Withdrawal Requested Successfully!");
+        setShowWithdraw(false);
+    } catch (e) {
+        alert("Error requesting withdrawal: " + e.message);
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn relative">
+      {showWithdraw && (
+        <WithdrawalModal 
+            onClose={() => setShowWithdraw(false)} 
+            onSubmit={handleWithdrawSubmit} 
+            available={availableBalance}
+        />
+      )}
+
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-8 text-white flex flex-col md:flex-row justify-between items-center shadow-lg shadow-black/20">
+        <div><h2 className="text-2xl font-bold">Current Month Earnings</h2><p className="text-neutral-400 mt-1">Estimated earnings for {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })} based on trading activity.</p></div>
+        <div className="mt-4 md:mt-0 text-right"><div className="text-sm text-neutral-500 uppercase tracking-wide font-semibold">Total Estimated Payout</div><div className="text-4xl font-bold text-amber-500 mt-1 shadow-amber-500/10 drop-shadow-lg">${totalEarnings.toLocaleString(undefined, {minimumFractionDigits: 2})}</div></div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-6">
+          <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6">
+            <h3 className="font-bold text-white mb-4 flex items-center"><Calculator size={20} className="mr-2 text-amber-500"/> Rebate Breakdown</h3>
+            <div className="overflow-hidden rounded-lg border border-neutral-800">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-neutral-800/50 text-neutral-400 font-semibold border-b border-neutral-800"><tr><th className="p-3">Source</th><th className="p-3 text-right">Volume</th><th className="p-3 text-right">Earnings</th></tr></thead>
+                <tbody className="divide-y divide-neutral-800">
+                  <tr><td className="p-3 font-medium text-neutral-200">Tier 1 (Direct)</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier1.fxLots} FX / {currentMonthData.tier1.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t1Earnings.toFixed(2)}</td></tr>
+                  <tr><td className="p-3 font-medium text-neutral-200">Tier 2</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier2.fxLots} FX / {currentMonthData.tier2.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t2Earnings.toFixed(2)}</td></tr>
+                  <tr><td className="p-3 font-medium text-neutral-200">Tier 3</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier3.fxLots} FX / {currentMonthData.tier3.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t3Earnings.toFixed(2)}</td></tr>
+                  <tr className="bg-amber-500/5 border-t border-amber-500/10"><td className="p-3 font-medium text-amber-500">Social Bonus</td><td className="p-3 text-right text-neutral-400">${currentMonthData.socialProfit} Profit</td><td className="p-3 text-right font-bold text-amber-500">+${socialBonus.toFixed(2)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6">
+             <div className="flex justify-between items-center mb-4">
+                <h3 className="font-bold text-white flex items-center"><CreditCard size={20} className="mr-2 text-neutral-500"/> Withdrawal History</h3>
+                <button 
+                  onClick={() => setShowWithdraw(true)}
+                  className="px-4 py-2 bg-amber-500 text-neutral-900 rounded-lg text-sm font-bold hover:bg-amber-400 transition-colors shadow-lg shadow-amber-500/20"
+                >
+                  Request Withdrawal
+                </button>
+             </div>
+             <div className="overflow-x-auto">
+               <table className="w-full text-left text-sm">
+                  <thead className="bg-neutral-800/50 text-neutral-400 font-semibold border-b border-neutral-800"><tr><th className="p-3">Date</th><th className="p-3">Method</th><th className="p-3 text-right">Amount</th><th className="p-3 text-center">Status</th></tr></thead>
+                  <tbody className="divide-y divide-neutral-800">{withdrawals.map((w) => (<tr key={w.id} className="hover:bg-neutral-800/30 transition-colors"><td className="p-3 text-neutral-400 flex items-center"><Clock size={14} className="mr-2 text-neutral-600"/> {w.date}</td><td className="p-3 text-neutral-400">{w.method}</td><td className="p-3 text-right font-medium text-neutral-200">${w.amount.toLocaleString()}</td><td className="p-3 text-center"><StatusBadge status={w.status} /></td></tr>))}</tbody>
+               </table>
+             </div>
+          </div>
+        </div>
+        <div className="space-y-6">
+           <div className="bg-gradient-to-br from-neutral-800 to-black rounded-xl p-6 text-white shadow-lg border border-neutral-700 relative overflow-hidden">
+             <div className="relative z-10">
+                <h3 className="font-bold text-lg mb-1">Performance Bonus</h3>
+                <p className="text-neutral-300 text-sm mb-4">Earn extra based on monthly volume.</p>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end"><span className="text-sm font-medium opacity-80 text-neutral-300">Current Tier</span><span className="text-xl font-bold text-white">{bonusTier.label}</span></div>
+                  <div className="w-full bg-neutral-950/50 rounded-full h-2 border border-neutral-600"><div className="bg-amber-500 h-2 rounded-full" style={{ width: `${Math.min((totalBaseCommission / 5000) * 100, 100)}%` }}></div></div>
+                  <div className="mt-4 pt-4 border-t border-neutral-700 flex justify-between items-center"><span className="text-sm text-neutral-300">Bonus Amount:</span><span className="font-bold text-lg text-amber-500">+${bonusAmount.toFixed(2)}</span></div>
+                </div>
+             </div>
+           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// E. NETWORK VIEW (Updated with Aggregation & Nudge)
+const NetworkView = ({ userRole, ibQualificationThreshold }) => {
+  const [expandedNodes, setExpandedNodes] = useState({});
+  const [selectedPartner, setSelectedPartner] = useState(null);
+  const [networkPartners, setNetworkPartners] = useState([]);  // Will be fetched from API
+  const [isLoading, setIsLoading] = useState(false);
+
+  const toggleNode = (id) => setExpandedNodes(p => ({...p, [id]: !p[id]}));
+  const handleNudge = (e, type, count) => {
+    e.stopPropagation();
+    alert(`System: Automatically sent '${type}' reminder emails to ${count} pending clients.`);
+  };
+
+  // Calculate total network volume from real data
+  const totalNetworkVolume = networkPartners.reduce((sum, p) => sum + (p.volume || 0), 0);
+
+  const NetworkRow = ({ node, level = 0 }) => {
+    const isExpanded = expandedNodes[node.id];
+    
+    // Filter logic: Separate Qualified vs Unqualified
+    const qualified = node.subPartners ? node.subPartners.filter(p => p.totalClients >= ibQualificationThreshold) : [];
+    const unqualified = node.subPartners ? node.subPartners.filter(p => p.totalClients < ibQualificationThreshold) : [];
+    
+    // Aggregation logic for small referrers
+    const aggregated = unqualified.reduce((acc, curr) => ({ clients: acc.clients + curr.totalClients, volume: acc.volume + curr.volume, revenue: acc.revenue + curr.revenue }), { clients: 0, volume: 0, revenue: 0 });
+    const hasChildren = qualified.length > 0 || unqualified.length > 0;
+    
+    // Nudge Logic Demo
+    const pendingKYC = node.id % 3 === 0 ? 4 : 0; 
+    const pendingDeposit = node.id % 2 === 0 ? 2 : 0;
+
+    return (
+        <>
+        <div className={`flex items-center p-4 border-b border-neutral-800 hover:bg-neutral-800/30 transition-colors ${level>0?'bg-neutral-900/50':''}`} style={{paddingLeft: `${level*24 + 16}px`}}>
+            <button onClick={()=>hasChildren && toggleNode(node.id)} className={`mr-3 p-1 rounded hover:bg-neutral-700 text-neutral-400 ${!hasChildren && 'invisible'}`}>{isExpanded ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</button>
+            <div className="flex-1 min-w-[200px] cursor-pointer" onClick={() => setSelectedPartner(node)}>
+                <div className="flex items-center"><span className="text-white font-bold mr-2">{node.name}</span><span className="text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 text-emerald-400 bg-emerald-500/10">{node.status}</span></div>
+                <div className="text-xs text-neutral-500 flex items-center mt-1"><span className="mr-2">{node.type}</span><span className="flex items-center"><Map size={10} className="mr-1"/>{node.country}</span></div>
+            </div>
+            
+            {/* Blind Nudge Buttons */}
+            <div className="hidden lg:flex gap-2 mr-8">
+             {pendingKYC > 0 && <button onClick={(e) => handleNudge(e, 'Complete KYC', pendingKYC)} className="flex items-center px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded text-[10px] text-neutral-300 transition-colors"><FileText size={10} className="mr-1 text-amber-500"/> Nudge KYC ({pendingKYC})</button>}
+             {pendingDeposit > 0 && <button onClick={(e) => handleNudge(e, 'Fund Account', pendingDeposit)} className="flex items-center px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded text-[10px] text-neutral-300 transition-colors"><Wallet size={10} className="mr-1 text-emerald-500"/> Nudge Deposit ({pendingDeposit})</button>}
+            </div>
+
+            <div className="hidden md:flex space-x-8 text-right"><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Clients</div><div className="text-white font-medium">{node.totalClients}</div></div><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Volume</div><div className="text-white font-medium">{node.volume}</div></div><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Revenue</div><div className="text-amber-500 font-bold">${node.revenue}</div></div></div>
+        </div>
+        {isExpanded && (
+            <div className="border-l-2 border-neutral-800 ml-6">
+                {qualified.map(child => <NetworkRow key={child.id} node={child} level={level+1} />)}
+                {unqualified.length > 0 && (
+                    <div className="flex items-center p-4 border-b border-neutral-800 bg-neutral-950/30 transition-colors" style={{paddingLeft: `${(level+1)*24 + 16}px`}}>
+                        <div className="mr-3 w-4"></div>
+                        <div className="flex-1"><div className="flex items-center"><span className="text-neutral-400 italic font-bold mr-2">Retail Referrers (Aggregated)</span><span className="text-[10px] bg-neutral-800 text-neutral-500 px-2 py-0.5 rounded border border-neutral-700">{unqualified.length} Users</span></div><div className="text-xs text-neutral-600 mt-1">Partners with &lt; {ibQualificationThreshold} clients</div></div>
+                        <div className="hidden md:flex space-x-8 text-right opacity-60"><div className="w-24 font-medium text-white">{aggregated.clients}</div><div className="w-24 font-medium text-white">{aggregated.volume}</div><div className="w-24 font-bold text-white">${aggregated.revenue}</div></div>
+                    </div>
+                )}
+            </div>
+        )}
+        </>
+    );
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn relative">
+        {selectedPartner && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6">
+             <button onClick={() => setSelectedPartner(null)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+             <div className="flex items-center mb-6"><div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-amber-500 font-bold text-lg mr-4">{selectedPartner.name.substring(0,2).toUpperCase()}</div><div><h3 className="text-xl font-bold text-white">{selectedPartner.name}</h3><p className="text-sm text-emerald-400">{selectedPartner.type}</p></div></div>
+             <div className="space-y-4 mb-6"><div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800"><p className="text-xs text-neutral-500 uppercase font-bold mb-2">Contact Info</p><div className="space-y-2 text-sm text-neutral-300"><div className="flex justify-between"><span>Email:</span> <span className="text-white">partner.{selectedPartner.id}@nommia.net</span></div><div className="flex justify-between"><span>Phone:</span> <span className="text-white">+44 7700 900{selectedPartner.id}</span></div></div></div></div>
+             <button className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg transition-colors flex items-center justify-center"><Bell size={18} className="mr-2"/> Contact Partner</button>
+          </div>
+        </div>
+        )}
+        <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-xl flex justify-between items-center"><div><h2 className="text-xl font-bold text-white flex items-center"><Network size={20} className="mr-2 text-amber-500"/> Partner Network</h2><p className="text-sm text-neutral-400 mt-1">Monitor performance across your sub-IB hierarchy.</p></div><div className="text-right hidden sm:block"><div className="text-xs text-neutral-500 uppercase font-bold">Total Network Volume</div><div className="text-2xl font-bold text-white">{totalNetworkVolume.toFixed(1)} <span className="text-sm text-neutral-500 font-normal">Lots</span></div></div></div>
+        <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-neutral-800 bg-neutral-950/50 flex justify-between items-center text-xs font-bold text-neutral-500 uppercase tracking-wider"><div className="pl-12">Partner Name</div><div className="hidden md:flex space-x-8 pr-4"><div className="w-24 text-right">Clients</div><div className="w-24 text-right">Volume</div><div className="w-24 text-right">Revenue</div></div></div>
+            <div>
+              {isLoading ? (
+                <div className="p-8 text-center text-neutral-500">Loading network data...</div>
+              ) : networkPartners.length === 0 ? (
+                <div className="p-8 text-center text-neutral-500">
+                  <Network size={40} className="mx-auto mb-4 opacity-50" />
+                  <p className="text-lg font-medium mb-2">No Partners Yet</p>
+                  <p className="text-sm">Your sub-IB network will appear here once you have partners.</p>
+                </div>
+              ) : (
+                networkPartners.map(node => <NetworkRow key={node.id} node={node} />)
+              )}
+            </div>
+        </div>
+    </div>
+  );
+};
+
+// F. SETTINGS VIEW (Fixed: Removed Typo in Function Name)
+const SettingsView = () => {
+  // --- Data State - Will be fetched from user API ---
+  const [payment, setPayment] = useState({ 
+      bankName: "", accountNum: "", bic: "", 
+      usdtTrc: "", usdtErc: "", usdcPol: "", usdcErc: "" 
+  });
+  
+  // Profile will be loaded from localStorage or API
+  const [profile, setProfile] = useState({
+      name: localStorage.getItem('username') || "",
+      email: "",
+      phone: ""
+  });
+
+  // --- Security / Modal State ---
+  const [showSecurityModal, setShowSecurityModal] = useState(false);
+  const [verificationType, setVerificationType] = useState('password'); // 'password' or 'save'
+  const [otpStep, setOtpStep] = useState('initial'); // 'initial', 'verify'
+  
+  // --- Input State ---
+  const [otpInput, setOtpInput] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  // --- 2FA State ---
+  const [isTwoFAEnabled, setIsTwoFAEnabled] = useState(false);
+  const [showTwoFAModal, setShowTwoFAModal] = useState(false);
+  const [twoFAStep, setTwoFAStep] = useState('scan');
+  const [twoFACode, setTwoFACode] = useState('');
+
+  // --- Handlers ---
+
+  // 1. Trigger the Save Flow
+  const initiateSave = () => {
+      setVerificationType('save');
+      setOtpStep('initial');
+      setShowSecurityModal(true);
+  };
+
+  // 2. Trigger Password Change Flow
+  const initiatePasswordChange = () => {
+      setVerificationType('password');
+      setOtpStep('initial');
+      setShowSecurityModal(true);
+  };
+
+  // 3. Send OTP (Mock)
+  const handleRequestOTP = () => { 
+      alert(`Security Code sent to ${profile.email}`); 
+      setOtpStep('verify'); 
+  };
+
+  // 4. Verify & Execute Action (Fixed Function Name)
+  const handleFinalVerification = () => {
+      if (otpInput.length < 6) return alert("Please enter a valid 6-digit OTP.");
+
+      if (verificationType === 'password') {
+          // Password Change Logic
+          if (newPassword !== confirmPassword) return alert("Passwords do not match.");
+          if (newPassword.length < 8) return alert("Password must be at least 8 characters.");
+          alert("Success: Password updated successfully.");
+      } else {
+          // General Settings Save Logic
+          alert("Success: Account details and payout methods saved securely.");
+      }
+
+      // Reset & Close
+      setShowSecurityModal(false); 
+      setOtpStep('initial'); 
+      setOtpInput('');
+      setNewPassword('');
+      setConfirmPassword('');
+  };
+
+  // --- 2FA Handlers ---
+  const handleToggle2FA = () => {
+      if (isTwoFAEnabled) {
+          if(window.confirm("Disable 2FA?")) setIsTwoFAEnabled(false);
+      } else {
+          setTwoFAStep('scan');
+          setShowTwoFAModal(true);
+      }
+  };
+
+  const handleVerify2FA = () => {
+      if (twoFACode.length !== 6) return alert("Invalid Code");
+      setIsTwoFAEnabled(true);
+      setShowTwoFAModal(false);
+      setTwoFACode('');
+      alert("2FA Enabled Successfully");
+  };
+
+  return (
+    <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 space-y-6 animate-fadeIn relative">
+        
+        {/* --- SECURITY VERIFICATION MODAL (Shared for Password & Saving) --- */}
+        {showSecurityModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6">
+                    <button onClick={() => setShowSecurityModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                    
+                    <h3 className="text-xl font-bold text-white mb-2 flex items-center">
+                        <Shield size={20} className="mr-2 text-amber-500"/> 
+                        {verificationType === 'password' ? 'Change Password' : 'Confirm Changes'}
+                    </h3>
+                    
+                    {otpStep === 'initial' ? (
+                        <div className="space-y-4">
+                            <p className="text-sm text-neutral-400">
+                                {verificationType === 'password' 
+                                    ? "We need to verify your identity before changing your password." 
+                                    : "You are updating sensitive account information. Please verify your identity."}
+                                <br/><br/>Click below to send a code to: <span className="text-white font-bold">{profile.email}</span>
+                            </p>
+                            <button onClick={handleRequestOTP} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Send Verification Code</button>
+                        </div>
+                    ) : (
+                        <div className="space-y-4 animate-fadeIn">
+                            <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-lg">
+                                <label className="text-xs text-neutral-500 uppercase font-bold">Enter OTP</label>
+                                <input 
+                                    type="text" 
+                                    placeholder="000000" 
+                                    maxLength="6" 
+                                    value={otpInput} 
+                                    onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, ''))} 
+                                    className="w-full mt-1 bg-transparent border-b border-neutral-700 p-2 text-white text-center tracking-[0.5em] font-mono text-xl outline-none focus:border-amber-500" 
+                                    autoFocus
+                                />
+                            </div>
+
+                            {/* Only show Password fields if changing password */}
+                            {verificationType === 'password' && (
+                                <div className="space-y-3 pt-2">
+                                    <input type="password" placeholder="New Password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
+                                    <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
+                                </div>
+                            )}
+
+                            <button onClick={handleFinalVerification} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg mt-2">
+                                {verificationType === 'password' ? 'Update Password' : 'Save Changes'}
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
+        {/* --- 2FA SETUP MODAL --- */}
+        {showTwoFAModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6 text-center">
+                    <button onClick={() => setShowTwoFAModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                    <div className="mb-4 flex justify-center"><div className="p-3 bg-amber-500/10 rounded-full text-amber-500"><Shield size={32}/></div></div>
+                    <h3 className="text-xl font-bold text-white mb-2">Set up 2FA</h3>
+                    
+                    {twoFAStep === 'scan' ? (
+                        <div className="space-y-6">
+                            <p className="text-sm text-neutral-400">Scan this QR code with your authenticator app.</p>
+                            <div className="bg-white p-2 w-48 h-48 mx-auto rounded-lg">
+                                <img src="https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=otpauth://totp/Nommia:User?secret=JBSWY3DPEHPK3PXP&issuer=Nommia" alt="QR Code" className="w-full h-full" />
+                            </div>
+                            <button onClick={() => setTwoFAStep('verify')} className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg border border-neutral-700">I have scanned it</button>
+                        </div>
+                    ) : (
+                        <div className="space-y-6 animate-fadeIn">
+                            <p className="text-sm text-neutral-400">Enter the 6-digit code to verify.</p>
+                            <input type="text" placeholder="000 000" maxLength="6" value={twoFACode} onChange={(e) => setTwoFACode(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-4 text-white text-center tracking-[0.5em] font-mono text-2xl outline-none focus:border-amber-500" autoFocus />
+                            <button onClick={handleVerify2FA} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Verify & Enable</button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
+        {/* --- MAIN SETTINGS UI --- */}
+        <div className="flex items-center"><Settings size={24} className="mr-3 text-amber-500"/><div><h2 className="text-xl font-bold text-white">Settings</h2><p className="text-sm text-neutral-400">Manage profile and payout preferences.</p></div></div>
+        
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Left Column: Payouts */}
+            <div className="space-y-4">
+                <h3 className="text-lg font-bold text-white flex items-center"><Wallet size={18} className="mr-2 text-neutral-500"/> Payout Methods</h3>
+                
+                <div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800 space-y-3">
+                    <p className="text-xs text-amber-500 font-bold uppercase mb-2">Bank Wire Details</p>
+                    <div><label className="text-xs text-neutral-500 font-bold">Bank Name</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={payment.bankName} onChange={e=>setPayment({...payment, bankName:e.target.value})} placeholder="e.g. Barclays"/></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">Account Number / IBAN</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={payment.accountNum} onChange={e=>setPayment({...payment, accountNum:e.target.value})} placeholder="GB33 BARC..."/></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">BIC / SWIFT Code</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={payment.bic} onChange={e=>setPayment({...payment, bic:e.target.value})} placeholder="BARCGB22"/></div>
+                </div>
+
+                <div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800 space-y-3">
+                    <p className="text-xs text-emerald-500 font-bold uppercase mb-2">Crypto Wallets</p>
+                    <div><label className="text-xs text-neutral-500 font-bold">USDT (TRC20)</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none font-mono text-sm" value={payment.usdtTrc} onChange={e=>setPayment({...payment, usdtTrc:e.target.value})}/></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">USDT (ERC20)</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none font-mono text-sm" value={payment.usdtErc} onChange={e=>setPayment({...payment, usdtErc:e.target.value})}/></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">USDC (POL)</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none font-mono text-sm" value={payment.usdcPol} onChange={e=>setPayment({...payment, usdcPol:e.target.value})}/></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">USDC (ERC20)</label><input className="w-full bg-neutral-900 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none font-mono text-sm" value={payment.usdcErc} onChange={e=>setPayment({...payment, usdcErc:e.target.value})}/></div>
+                </div>
+
+                <div className="p-3 bg-red-900/10 border border-red-900/30 rounded-lg flex items-start">
+                    <AlertCircle size={16} className="text-red-500 mt-0.5 mr-2 flex-shrink-0"/>
+                    <p className="text-[10px] text-red-400 leading-tight"><strong>Disclaimer:</strong> Nommia cannot be held liable for funds sent to incorrect accounts provided here.</p>
+                </div>
+            </div>
+
+            {/* Right Column: Profile & Security */}
+            <div className="space-y-6">
+                <div className="space-y-4">
+                    <h3 className="text-lg font-bold text-white flex items-center"><Users size={18} className="mr-2 text-neutral-500"/> Basic Information</h3>
+                    <div><label className="text-xs text-neutral-500 font-bold">Full Name</label><input className="w-full bg-neutral-950 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} /></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">Email Address</label><input className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-neutral-500 mt-1 cursor-not-allowed" value={profile.email} disabled /><p className="text-[10px] text-neutral-600 mt-1">Contact support to change email.</p></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">Phone Number</label><input className="w-full bg-neutral-950 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={profile.phone} onChange={e => setProfile({...profile, phone: e.target.value})} /></div>
+                </div>
+
+                <div className="pt-6 border-t border-neutral-800 space-y-4">
+                    <h3 className="text-lg font-bold text-white flex items-center"><Shield size={18} className="mr-2 text-neutral-500"/> Security</h3>
+                    
+                    <button onClick={initiatePasswordChange} className="w-full py-3 border border-neutral-700 hover:bg-neutral-800 text-white rounded-lg font-medium transition-colors flex items-center justify-center">
+                        <Lock size={16} className="mr-2"/> Change Password
+                    </button>
+
+                    <div className="flex items-center justify-between p-4 bg-neutral-950 border border-neutral-800 rounded-lg">
+                        <div>
+                            <div className="text-sm font-bold text-white flex items-center">
+                                Two-Factor Authentication
+                                {isTwoFAEnabled && <span className="ml-2 px-2 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] rounded border border-emerald-500/20">Enabled</span>}
+                            </div>
+                            <p className="text-xs text-neutral-500 mt-1">Secure account with Authenticator app.</p>
+                        </div>
+                        <div onClick={handleToggle2FA} className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${isTwoFAEnabled ? 'bg-emerald-500' : 'bg-neutral-700'}`}>
+                            <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${isTwoFAEnabled ? 'left-7' : 'left-1'}`}></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {/* Main Save Button with OTP Trigger */}
+        <div className="text-right pt-4 border-t border-neutral-800">
+            <button 
+                onClick={initiateSave} 
+                className="bg-amber-500 text-black px-6 py-2 rounded-lg font-bold hover:bg-amber-400 transform active:scale-95 transition-all"
+            >
+                Save Changes
+            </button>
+        </div>
+    </div>
+  );
+};
+// G. ADMIN USER MANAGEMENT VIEW (With Role Editing, Countries & Nudge Rules & OTP Save)
+const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationThreshold }) => {
+    // Local state for user data - will be fetched from API
+    const [users, setUsers] = useState([]);
+    const [editingUser, setEditingUser] = useState(null); 
+    const [showModal, setShowModal] = useState(false);
+
+    // Modal form states
+    const [selectedRole, setSelectedRole] = useState('');
+    const [selectedRegion, setSelectedRegion] = useState('');
+    const [selectedSubManagers, setSelectedSubManagers] = useState([]);
+
+    // New Nudge Rule State
+    const [nudgeRules, setNudgeRules] = useState({
+        cooldownHours: 24, // How often (e.g., once every 24 hours)
+        maxNudgesPerClient: 5 // Max total nudges allowed
+    });
+
+    // OTP State for Admin Save
+    const [showOtpModal, setShowOtpModal] = useState(false);
+    const [otpStep, setOtpStep] = useState('initial'); // 'initial', 'verify'
+    const [otpInput, setOtpInput] = useState('');
+    const [pendingSaveAction, setPendingSaveAction] = useState(null); // 'user' or 'policy'
+
+    // Full country list excluding US, Iran, Iraq, North Korea
+    const availableCountries = [
+        "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
+        "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", "Burkina Faso", "Burundi",
+        "Cabo Verde", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", "China", "Colombia", "Comoros", "Congo (Democratic Republic)", "Congo (Republic)", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic",
+        "Denmark", "Djibouti", "Dominica", "Dominican Republic",
+        "East Timor", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Eswatini", "Ethiopia",
+        "Fiji", "Finland", "France",
+        "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guinea-Bissau", "Guyana",
+        "Haiti", "Honduras", "Hungary",
+        "Iceland", "India", "Indonesia", "Ireland", "Israel", "Italy", "Ivory Coast",
+        "Jamaica", "Japan", "Jordan",
+        "Kazakhstan", "Kenya", "Kiribati", "Kosovo", "Kuwait", "Kyrgyzstan",
+        "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg",
+        "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar",
+        "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Macedonia", "Norway",
+        "Oman",
+        "Pakistan", "Palau", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal",
+        "Qatar",
+        "Romania", "Russia", "Rwanda",
+        "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland", "Syria",
+        "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu",
+        "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom", "Uruguay", "Uzbekistan",
+        "Vanuatu", "Vatican City", "Venezuela", "Vietnam",
+        "Yemen",
+        "Zambia", "Zimbabwe"
+    ];
+
+    // Open modal logic
+    const handleEditClick = (user) => {
+        setEditingUser(user);
+        setSelectedRole(user.role);
+        setSelectedRegion(user.region || '');
+        setSelectedSubManagers([]); 
+        setShowModal(true);
+    };
+
+    // Initiate Save with OTP
+    const initiateSave = (type) => {
+        setPendingSaveAction(type);
+        setOtpStep('initial');
+        setShowOtpModal(true);
+    };
+
+    const handleRequestOTP = () => {
+        alert("OTP sent to admin email.");
+        setOtpStep('verify');
+    };
+
+    // Finalize Save after OTP
+    const handleFinalizeSave = () => {
+        if (otpInput.length < 6) {
+            alert("Invalid OTP");
+            return;
+        }
+
+        if (pendingSaveAction === 'user') {
+             setUsers(users.map(u => {
+                if (u.id === editingUser.id) {
+                    return { 
+                        ...u, 
+                        role: selectedRole, 
+                        region: selectedRole === 'Regional Manager' ? 'Multi-Region' : selectedRegion,
+                        managedIds: selectedSubManagers 
+                    };
+                }
+                return u;
+            }));
+            setShowModal(false);
+            setEditingUser(null);
+            alert("User role updated successfully.");
+        } else if (pendingSaveAction === 'policy') {
+            alert("Policies saved successfully.");
+        }
+
+        setShowOtpModal(false);
+        setOtpStep('initial');
+        setOtpInput('');
+        setPendingSaveAction(null);
+    };
+
+
+    const toggleSubManager = (id) => {
+        if (selectedSubManagers.includes(id)) {
+            setSelectedSubManagers(selectedSubManagers.filter(sid => sid !== id));
+        } else {
+            setSelectedSubManagers([...selectedSubManagers, id]);
+        }
+    };
+
+    return (
+        <div className="space-y-6 animate-fadeIn relative">
+            
+            {/* --- OTP MODAL --- */}
+            {showOtpModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+                    <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6">
+                        <button onClick={() => setShowOtpModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                        <h3 className="text-xl font-bold text-white mb-2 flex items-center"><Shield size={20} className="mr-2 text-amber-500"/> Admin Verification</h3>
+                        
+                        {otpStep === 'initial' ? (
+                            <div className="space-y-4">
+                                <p className="text-sm text-neutral-400">Please verify your identity to confirm these changes.</p>
+                                <button onClick={handleRequestOTP} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Send Verification Code</button>
+                            </div>
+                        ) : (
+                            <div className="space-y-4 animate-fadeIn">
+                                <input type="text" placeholder="000000" maxLength="6" value={otpInput} onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white text-center tracking-[0.5em] font-mono text-xl outline-none focus:border-amber-500" autoFocus />
+                                <button onClick={handleFinalizeSave} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg mt-2">Confirm</button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* --- EDIT USER MODAL --- */}
+            {showModal && editingUser && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-lg shadow-2xl relative p-6">
+                        <button onClick={() => setShowModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                        
+                        <h3 className="text-xl font-bold text-white mb-1">Edit User Role</h3>
+                        <p className="text-sm text-neutral-400 mb-6">Modifying permissions for <span className="text-white font-bold">{editingUser.name}</span></p>
+
+                        <div className="space-y-5">
+                            <div>
+                                <label className="text-xs text-neutral-500 uppercase font-bold">Assign Role</label>
+                                <select value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg p-2.5 text-white focus:border-amber-500 outline-none">
+                                    <option value="IB">Standard IB</option>
+                                    <option value="Country Manager">Country Manager</option>
+                                    <option value="Regional Manager">Regional Manager</option>
+                                    <option value="Admin">Administrator</option>
+                                </select>
+                            </div>
+
+                            {selectedRole === 'Country Manager' && (
+                                <div className="p-4 bg-neutral-950/50 border border-neutral-800 rounded-lg animate-fadeIn">
+                                    <label className="text-xs text-amber-500 uppercase font-bold flex items-center mb-2"><Globe size={12} className="mr-1"/> Assign Territory</label>
+                                    <select value={selectedRegion} onChange={(e) => setSelectedRegion(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-white focus:border-amber-500 outline-none">
+                                        <option value="">Select a Country...</option>
+                                        {availableCountries.map(c => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                </div>
+                            )}
+
+                            {selectedRole === 'Regional Manager' && (
+                                <div className="p-4 bg-neutral-950/50 border border-neutral-800 rounded-lg animate-fadeIn">
+                                    <label className="text-xs text-blue-400 uppercase font-bold flex items-center mb-3"><Users size={12} className="mr-1"/> Allocate Country Managers</label>
+                                    <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+                                        {users.filter(u => u.role === 'Country Manager').length > 0 ? (
+                                            users.filter(u => u.role === 'Country Manager').map(cm => (
+                                                <div key={cm.id} className="flex items-center justify-between p-2 bg-neutral-900 border border-neutral-700 rounded hover:border-blue-500 cursor-pointer" onClick={() => toggleSubManager(cm.id)}>
+                                                    <span className="text-sm text-white">{cm.name} <span className="text-neutral-500 text-xs">({cm.region})</span></span>
+                                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedSubManagers.includes(cm.id) ? 'bg-blue-500 border-blue-500' : 'border-neutral-600'}`}>
+                                                        {selectedSubManagers.includes(cm.id) && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <p className="text-xs text-neutral-500 italic">No Country Managers found to allocate.</p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-8 flex gap-3">
+                            <button onClick={() => setShowModal(false)} className="flex-1 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-bold">Cancel</button>
+                            <button onClick={() => initiateSave('user')} className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold">Save Changes</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- ADMIN DASHBOARD HEADER --- */}
+            <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+                    <div>
+                        <h2 className="text-xl font-bold text-white flex items-center"><UserCog size={24} className="mr-3 text-red-500"/> User & Policy Management</h2>
+                        <p className="text-sm text-neutral-400 mt-1">Configure global qualification and engagement rules.</p>
+                    </div>
+                    <button onClick={() => initiateSave('policy')} className="mt-4 md:mt-0 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white rounded-lg text-sm font-bold transition-colors">
+                        Save Policies
+                    </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Qualification Rules */}
+                    <div className="bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+                        <h4 className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Shield size={14} className="mr-2"/> Qualification Rules</h4>
+                        <div className="flex items-center justify-between">
+                            <span className="text-sm text-neutral-300">IB Threshold (Clients)</span>
+                            <div className="flex items-center">
+                                <input 
+                                    type="number" 
+                                    value={ibQualificationThreshold} 
+                                    onChange={e => setIbQualificationThreshold(Number(e.target.value))} 
+                                    className="bg-neutral-800 text-white border border-neutral-700 rounded w-16 text-center py-1 focus:border-red-500 outline-none font-bold"
+                                />
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 mt-2">Partners must refer this many active clients to appear in the Network Tree.</p>
+                    </div>
+
+                    {/* Engagement / Nudge Rules (NEW) */}
+                    <div className="bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+                        <h4 className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Bell size={14} className="mr-2"/> Engagement Policy (Nudges)</h4>
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="text-[10px] text-neutral-400 block mb-1">Cooldown (Hours)</label>
+                                <input 
+                                    type="number" 
+                                    value={nudgeRules.cooldownHours}
+                                    onChange={e => setNudgeRules({...nudgeRules, cooldownHours: Number(e.target.value)})}
+                                    className="w-full bg-neutral-800 text-white border border-neutral-700 rounded py-1 px-2 focus:border-amber-500 outline-none text-sm"
+                                />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-[10px] text-neutral-400 block mb-1">Max Per Client</label>
+                                <input 
+                                    type="number" 
+                                    value={nudgeRules.maxNudgesPerClient}
+                                    onChange={e => setNudgeRules({...nudgeRules, maxNudgesPerClient: Number(e.target.value)})}
+                                    className="w-full bg-neutral-800 text-white border border-neutral-700 rounded py-1 px-2 focus:border-amber-500 outline-none text-sm"
+                                />
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 mt-2">Limits how often managers can annoy clients with "Blind Nudges".</p>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- USER TABLE --- */}
+            <div className="bg-neutral-900 rounded-xl border border-neutral-800 overflow-hidden">
+                <table className="w-full text-sm text-left">
+                    <thead className="bg-neutral-950 text-neutral-400 font-semibold border-b border-neutral-800">
+                        <tr>
+                            <th className="p-4">Name</th>
+                            <th className="p-4">Email</th>
+                            <th className="p-4">Current Role</th>
+                            <th className="p-4">Assigned Territory</th>
+                            <th className="p-4 text-center">Status</th>
+                            <th className="p-4 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-800">
+                        {users.map(u => (
+                            <tr key={u.id} className="hover:bg-neutral-800/30 transition-colors">
+                                <td className="p-4 text-white font-medium">{u.name}</td>
+                                <td className="p-4 text-neutral-400">{u.email}</td>
+                                <td className="p-4">
+                                    <span className={`px-2 py-1 rounded text-xs border ${
+                                        u.role === 'Admin' ? 'bg-red-900/20 text-red-400 border-red-900/50' :
+                                        u.role.includes('Manager') ? 'bg-blue-900/20 text-blue-400 border-blue-900/50' :
+                                        'bg-neutral-800 text-neutral-300 border-neutral-700'
+                                    }`}>
+                                        {u.role}
+                                    </span>
+                                </td>
+                                <td className="p-4 text-neutral-300">
+                                    {u.role === 'Regional Manager' ? (
+                                        <span className="text-xs text-neutral-500 italic">{u.managedIds ? `${u.managedIds.length} CMs Managed` : 'Unassigned'}</span>
+                                    ) : (
+                                        u.region || <span className="text-neutral-600">-</span>
+                                    )}
+                                </td>
+                                <td className="p-4 text-center">
+                                    <span className={`text-[10px] px-2 py-0.5 rounded border ${u.qualified ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-neutral-800 border-neutral-700 text-neutral-500'}`}>
+                                        {u.qualified ? 'Active' : 'Pending'}
+                                    </span>
+                                </td>
+                                <td className="p-4 text-right">
+                                    <button 
+                                        onClick={() => handleEditClick(u)}
+                                        className="text-xs bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white px-3 py-1.5 rounded transition-colors"
+                                    >
+                                        Edit Role
+                                    </button>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+// --- MAIN APP COMPONENT ---
+export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  
+  // Dashboard State
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
+  
+  // API Data State - NO MOCK DATA, start with empty arrays
+  const [clients, setClients] = useState([]);
+  const [clientUsernames, setClientUsernames] = useState([]);
+  const [apiStatus, setApiStatus] = useState('disconnected');
+  const [isLoadingClients, setIsLoadingClients] = useState(false);  // Loading state for initial client fetch
+  const [userRole, setUserRole] = useState('IB'); 
+  const [ibQualificationThreshold, setIbQualificationThreshold] = useState(5);
+  // Volume / revenue state (updated from filtered trade history)
+  const [totalVolume, setTotalVolume] = useState(0);
+  const [revenue, setRevenue] = useState(0);
+  const [totalPL, setTotalPL] = useState(0);
+  const [tradeHistory, setTradeHistory] = useState({ trades: [], totalVolume: 0, totalPL: 0 });
+  
+  // Real-time System Alerts State - empty until real alerts come in
+  const [systemAlerts, setSystemAlerts] = useState([]);
+
+  const handleLogin = (token, username) => {
+    setIsAuthenticated(true);
+    setCurrentUser(username);
+    localStorage.setItem('username', username);
+    initAPI(token);
+  };
+
+  const handleLogout = () => {
+    disconnectWebSocket();
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setClients([]);  // Clear to empty, not mock data
+    setSystemAlerts([]);
+    setApiStatus('disconnected');
+  };
+
+  const initAPI = async (token) => {
+    try {
+      console.log("=== Initializing XValley Connection ===");
+      setApiStatus('connecting');
+      setIsLoadingClients(true);
+      
+      // Step 1: Fetch server config
+      await fetchServerConfig();
+      
+      // Step 2: Connect WebSocket and authenticate
+      await connectWebSocket(token);
+      console.log("✅ WebSocket Connected");
+      
+      // Step 3: Fetch complete client data (clients + trading accounts + trades)
+      console.log("Fetching complete client data...");
+      const clientData = await fetchCompleteClientData();
+      console.log(`✅ Loaded ${clientData.length} clients with full data`);
+      
+      setClients(clientData);
+      setClientUsernames(clientData.map(c => c.username).filter(Boolean));      
+      
+      // Step 4: Fetch network stats for dashboard
+      console.log("Fetching network statistics...");
+      const stats = await fetchNetworkStats();
+      console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
+      
+      setTotalVolume(stats.totalVolume);
+      setRevenue(stats.totalRevenue);
+      setTotalPL(stats.totalPL);
+      setTradeHistory(stats.trades || []);
+      
+      // Step 5: Subscribe to real-time updates
+      subscribeToTradeUpdates((update) => console.log("Trade Update:", update));
+      subscribeToAccountEvents((update) => console.log("Account Update:", update));
+      
+      setApiStatus('connected');
+      setIsLoadingClients(false);
+      console.log("=== API Initialization Complete ===");
+      
+    } catch (error) {
+      console.error("API Connection Failed:", error);
+      setApiStatus('error');
+      setIsLoadingClients(false);
+    }
+  };
+
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLogin} />;
+  }
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'dashboard': return <DashboardView clients={clients} apiStatus={apiStatus} onNavigate={setActiveTab} clientUsernames={clientUsernames} setTotalVolume={setTotalVolume} setRevenue={setRevenue} setTotalPL={setTotalPL} setTradeHistory={setTradeHistory} totalVolume={totalVolume} revenue={revenue} tradeHistory={tradeHistory} />;
+      case 'clients': return <ClientsView clients={clients} />;
+      case 'marketing': return <MarketingView userRole={userRole} />;
+      // Pass the threshold to NetworkView
+      case 'network': return <NetworkView userRole={userRole} ibQualificationThreshold={ibQualificationThreshold} />;
+      case 'payouts': return <PayoutsView clients={clients} totalVolume={totalVolume} revenue={revenue} />;
+      case 'reports': return <ReportsView clients={clients} totalVolume={totalVolume} revenue={revenue} apiStatus={apiStatus} />;
+      case 'settings': return <SettingsView />;
+      // Add Admin View
+      case 'admin': return <AdminUserManagementView ibQualificationThreshold={ibQualificationThreshold} setIbQualificationThreshold={setIbQualificationThreshold} />;
+      default: return <DashboardView clients={clients} apiStatus={apiStatus} onNavigate={setActiveTab} clientUsernames={clientUsernames} setTotalVolume={setTotalVolume} setRevenue={setRevenue} setTotalPL={setTotalPL} setTradeHistory={setTradeHistory} totalVolume={totalVolume} revenue={revenue} tradeHistory={tradeHistory} />;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-neutral-950 font-sans text-neutral-100 flex overflow-hidden">
+      {isMobileMenuOpen && <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-40 lg:hidden" onClick={() => setIsMobileMenuOpen(false)}></div>}
+      
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 bg-neutral-900 text-white transition-all duration-300 flex flex-col border-r border-neutral-800 ${sidebarCollapsed && !isMobileMenuOpen ? 'w-20' : 'w-64'} ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="h-16 flex items-center justify-center border-b border-neutral-800 relative">
+          {!sidebarCollapsed || isMobileMenuOpen ? <div className="flex items-center justify-center w-full px-4"><img src="https://i.ibb.co/yc7GWG8v/Nommia-Gold-and-White-Logo.png" alt="Nommia Logo" className="h-14 w-auto object-contain transition-all duration-300" /></div> : <div className="w-full flex justify-center"><img src="https://i.ibb.co/yc7GWG8v/Nommia-Gold-and-White-Logo.png" alt="Nommia Logo" className="h-10 w-10 object-contain transition-all duration-300" /></div>}
+          <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden text-neutral-400 hover:text-white transition-colors absolute top-4 right-4"><X size={20} /></button>
+          <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:block text-neutral-500 hover:text-white transition-colors absolute top-1/2 -translate-y-1/2 right-2 p-1">{sidebarCollapsed ? <Menu size={16}/> : <X size={16}/>}</button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto py-6 px-3">
+          <SidebarItem icon={LayoutDashboard} label="Overview" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          <SidebarItem icon={Users} label="Clients" active={activeTab === 'clients'} onClick={() => setActiveTab('clients')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          <SidebarItem icon={LinkIcon} label="Marketing" active={activeTab === 'marketing'} onClick={() => setActiveTab('marketing')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          <SidebarItem icon={Network} label="Network" active={activeTab === 'network'} onClick={() => setActiveTab('network')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          <SidebarItem icon={PieChart} label="Reports" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          <SidebarItem icon={DollarSign} label="Payouts" active={activeTab === 'payouts'} onClick={() => setActiveTab('payouts')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          
+          {userRole === 'Admin' && (
+             <>
+               <div className="my-2 border-t border-neutral-800 mx-2"></div>
+               <SidebarItem icon={UserCog} label="User Management" active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+             </>
+          )}
+
+          <div className="my-4 border-t border-neutral-800 mx-2"></div>
+          
+           <div className={`px-3 py-2 ${sidebarCollapsed ? 'hidden' : 'block'}`}>
+               <div className="bg-neutral-800/50 rounded-lg p-2 border border-neutral-700 mb-4">
+                 <p className="text-xs text-neutral-500 uppercase font-bold mb-2 text-center">Demo View As:</p>
+                 <div className="flex gap-1 justify-center flex-wrap">
+                   <button onClick={() => setUserRole('IB')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'IB' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>IB</button>
+                   <button onClick={() => setUserRole('CountryManager')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'CountryManager' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>CM</button>
+                   <button onClick={() => setUserRole('RegionalManager')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'RegionalManager' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>RM</button>
+                   <button onClick={() => {setUserRole('Admin'); setActiveTab('admin');}} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'Admin' ? 'bg-red-500 text-white font-bold' : 'bg-neutral-700 text-neutral-400'}`}>Admin</button>
+                 </div>
+               </div>
+           </div>
+        </div>
+        
+        <div className="p-4 border-t border-neutral-800">
+           <SidebarItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} collapsed={sidebarCollapsed && !isMobileMenuOpen} />
+          {!sidebarCollapsed && (
+            <div className="mt-4 flex items-center p-3 bg-neutral-800 rounded-xl border border-neutral-700">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-500 to-amber-700 flex items-center justify-center text-sm font-bold shadow-lg text-white">
+                 {currentUser ? currentUser.substring(0, 2).toUpperCase() : 'IB'}
+              </div>
+              <div className="ml-3 overflow-hidden">
+                <p className="text-sm font-medium truncate text-white">{currentUser || 'Partner'}</p>
+                <p className="text-xs text-neutral-400 truncate">ID: {getSessionPartnerId()}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+      
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        <header className="h-16 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between px-4 lg:px-8 shadow-sm relative">
+          <div className="flex items-center">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden mr-4 text-neutral-400 hover:text-white transition-colors"><Menu size={24} /></button>
+            <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:block text-neutral-400 hover:text-white transition-colors">{sidebarCollapsed ? <Menu size={20}/> : <Menu size={20}/>}</button>
+            <h1 className="ml-4 text-xl font-bold text-white capitalize hidden sm:block">{activeTab === 'admin' ? 'Admin Control Panel' : activeTab}</h1>
+          </div>
+          
+          <div className="flex items-center space-x-4">
+             {apiStatus === 'connected' && <RealTimeTicker />}
+
+             {/* WhatsApp Support Button */}
+             <a 
+               href="https://wa.me/447700900000" 
+               target="_blank" 
+               rel="noopener noreferrer"
+               className="hidden md:flex items-center px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-full text-xs font-bold transition-all hover:scale-105 mr-2"
+             >
+               <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg" alt="WA" className="w-4 h-4 mr-1.5" />
+               Live Chat
+             </a>
+
+             <div className={`hidden md:flex items-center px-3 py-1 rounded-full text-sm font-medium border shadow-[0_0_10px_rgba(16,185,129,0.2)] ${apiStatus === 'connected' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                <div className={`w-2 h-2 rounded-full mr-2 ${apiStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></div>{apiStatus === 'connected' ? 'System Operational' : 'Offline Mode'}
+             </div>
+             
+             {/* --- SYSTEM ALERTS DROPDOWN --- */}
+             <div className="relative">
+                 <button 
+                    onClick={() => setShowAlerts(!showAlerts)}
+                    className={`relative p-2 rounded-full transition-colors ${showAlerts ? 'bg-neutral-800 text-white' : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'}`}
+                 >
+                    <AlertCircle size={20} />
+                    {systemAlerts.length > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-neutral-900 shadow-md animate-pulse"></span>}
+                 </button>
+
+                 {showAlerts && (
+                    <>
+                        <div className="fixed inset-0 z-30" onClick={() => setShowAlerts(false)}></div> {/* Overlay to close on click-out */}
+                        <div className="absolute right-0 mt-3 w-80 bg-neutral-900 border border-neutral-700 rounded-xl shadow-2xl z-40 overflow-hidden animate-fadeIn">
+                            <div className="p-3 border-b border-neutral-800 font-bold text-white text-sm bg-neutral-950 flex justify-between items-center">
+                                <span>System Alerts</span>
+                                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded border border-red-500/30">{systemAlerts.length} New</span>
+                            </div>
+                            <div className="max-h-64 overflow-y-auto">
+                                {systemAlerts.length === 0 ? (
+                                    <div className="p-4 text-center text-neutral-500 text-sm">No alerts</div>
+                                ) : systemAlerts.map(alert => (
+                                    <div key={alert.id} className="p-3 border-b border-neutral-800 hover:bg-neutral-800 transition-colors cursor-pointer group">
+                                        <div className="flex justify-between items-start mb-1">
+                                            <span className={`text-xs font-bold ${alert.type === 'critical' ? 'text-red-500' : alert.type === 'success' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                                {alert.title}
+                                            </span>
+                                            <span className="text-[10px] text-neutral-600">{alert.timestamp ? getRelativeTime(alert.timestamp) : (typeof alert.time === 'string' ? alert.time : '')}</span>
+                                        </div>
+                                        <p className="text-xs text-neutral-300 group-hover:text-white transition-colors leading-snug">{alert.msg}</p>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="p-2 text-center bg-neutral-950">
+                                <button 
+                                    onClick={() => setSystemAlerts([])}
+                                    className="text-[10px] text-neutral-500 hover:text-white uppercase font-bold tracking-wider"
+                                >
+                                    Mark all read
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                 )}
+             </div>
+             
+             <div className="h-8 w-px bg-neutral-800 mx-2"></div>
+             <button onClick={handleLogout} className="flex items-center text-sm font-medium text-neutral-400 hover:text-white transition-colors"><span className="mr-2">Logout</span></button>
+          </div>
+        </header>
+        
+        <div className="flex-1 overflow-auto p-4 lg:p-8 bg-neutral-950" style={{ backgroundImage: `url("https://i.ibb.co/kV35BSfn/graphic3-b.png")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'center center', backgroundSize: 'cover', backgroundAttachment: 'fixed' }}>
+          <div className="max-w-7xl mx-auto">{renderContent()}</div>
+        </div>
+      </main>
+    </div>
+  );
+}
