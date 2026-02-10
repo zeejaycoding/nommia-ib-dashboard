@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.95.3",
     "autobahn-browser": "^22.11.1",
     "events": "^3.3.0",
     "jspdf": "^4.0.0",

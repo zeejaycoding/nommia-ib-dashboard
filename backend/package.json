@@ -1,0 +1,32 @@
+{
+  "name": "nommia-ib-nudge-backend",
+  "version": "1.0.0",
+  "description": "Email nudge system backend for Nommia IB Dashboard",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "email",
+    "nudge",
+    "nodemailer",
+    "gmail",
+    "nommia"
+  ],
+  "author": "Nommia Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "nodemailer": "^6.9.7",
+    "dotenv": "^16.3.1",
+    "@supabase/supabase-js": "^2.38.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

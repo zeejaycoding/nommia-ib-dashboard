@@ -4,7 +4,7 @@ import {
   Search, Filter, Download, ChevronDown, ChevronRight, AlertCircle, Copy, TrendingUp, 
   TrendingDown, DollarSign, Activity, Menu, X, Globe, Map, ArrowLeft, 
   Calculator, Info, Image, FileText, CreditCard, Clock, Plus, Upload, File, Calendar, Bell, Shield, Lock,
-  Network, UserCog, Briefcase, BarChart2
+  Network, UserCog, Briefcase, BarChart2, FileCheck, Trash2
 } from 'lucide-react';
 
 // PDF Generation Libraries
@@ -18,6 +18,7 @@ import {
   fetchIBClients,
   fetchCurrentUser,
   getSessionPartnerId,
+  getSessionUsername,
   subscribeToTradeUpdates,
   subscribeToAccountEvents,
   fetchClientTrades,
@@ -38,18 +39,30 @@ import {
   subscribeToSystemAlerts,
   fetchServerConfig,
   fetchVolumeHistory,
+  fetch3MonthCommissionHistory,
   fetchCompleteClientData,
-  fetchNetworkStats
+  fetchNetworkStats,
+  saveCampaign,
+  getCampaigns,
+  getCampaignById,
+  deleteCampaign,
+  getCampaignStats,
+  saveAsset,
+  savePayoutDetails,
+  getPayoutDetails,
+  deletePayoutDetails,
+  getAssets,
+  getAssetById,
+  deleteAsset,
+  sendNudgeEmail,
+  getNudgeHistory
 } from './api_integration_v2';
 
 import Login from './Login';
 
 // --- Configuration ---
-const COMMISSION_RATES = {
-  tier1: { fx: 4.50, metals: 8.00 },
-  tier2: { fx: 1.00, metals: 3.00 },
-  tier3: { fx: 1.00, metals: 2.00 }
-};
+// Commission rates handled by XValley API - we only add tier bonuses
+// Revenue = Commission from XValley + Tier Bonus (4%, 8%, or 10%)
 const PERFORMANCE_BONUS_TIERS = [
   { threshold: 4500, rate: 0.10, label: "Tier 3 (+10%)" },
   { threshold: 1000, rate: 0.08, label: "Tier 2 (+8%)" },
@@ -271,11 +284,18 @@ const WithdrawalModal = ({ onClose, onSubmit, available }) => {
 
 const CreateCampaignModal = ({ onClose, onSubmit }) => {
   const [name, setName] = useState('');
+  const [referrerTag, setReferrerTag] = useState('');
+  const [cost, setCost] = useState('0');
+  const [description, setDescription] = useState('');
   
   const handleSubmit = () => {
-    if(!name) return;
-    const tag = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    onSubmit({ name, tag });
+    if(!name || !referrerTag) return;
+    onSubmit({ 
+      name, 
+      referrerTag: referrerTag.toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, ''),
+      cost: parseFloat(cost) || 0,
+      description
+    });
   };
 
   return (
@@ -292,18 +312,53 @@ const CreateCampaignModal = ({ onClose, onSubmit }) => {
                     value={name} 
                     onChange={e => setName(e.target.value)}
                     className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
-                    placeholder="e.g. Summer Promo 2024"
+                    placeholder="e.g. Summer Promo 2026"
                     autoFocus
+                />
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Referrer Tag (Tracking ID)</label>
+                <input 
+                    type="text" 
+                    value={referrerTag} 
+                    onChange={e => setReferrerTag(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none font-mono text-sm"
+                    placeholder="e.g. SUMMER_2026 or FACEBOOK_ADS"
+                    title="This unique tag identifies when a customer came from this campaign"
+                />
+                <p className="text-xs text-neutral-400 mt-1">Share unique link: https://nommia.com/register?ref={referrerTag || 'TAG'}</p>
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Campaign Cost ($)</label>
+                <input 
+                    type="number" 
+                    value={cost} 
+                    onChange={e => setCost(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
+                    placeholder="0.00"
+                    step="0.01"
+                    min="0"
+                />
+                <p className="text-xs text-neutral-400 mt-1">Used to calculate ROI (Revenue - Cost) / Cost</p>
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Description (Optional)</label>
+                <textarea 
+                    value={description} 
+                    onChange={e => setDescription(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none text-sm"
+                    placeholder="e.g. Limited time offer, targeting new investors..."
+                    rows="3"
                 />
             </div>
         </div>
         <div className="mt-6">
             <button 
                 onClick={handleSubmit}
-                disabled={!name}
+                disabled={!name || !referrerTag}
                 className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 rounded-lg font-bold transition-colors"
             >
-                Create Tracking Link
+                Create Campaign
             </button>
         </div>
       </div>
@@ -314,15 +369,58 @@ const CreateCampaignModal = ({ onClose, onSubmit }) => {
 const UploadAssetModal = ({ onClose, onSubmit }) => {
   const [name, setName] = useState('');
   const [type, setType] = useState('image');
+  const [description, setDescription] = useState('');
+  const [tags, setTags] = useState('');
+  const [file, setFile] = useState(null);
+  const [fileData, setFileData] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFileSelect = (e) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      // Read file as base64 for localStorage storage
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const base64Data = event.target.result;
+        setFileData(base64Data);
+        setFile({
+          name: selectedFile.name,
+          size: (selectedFile.size / (1024 * 1024)).toFixed(2) + ' MB',
+          type: selectedFile.type,
+          lastModified: new Date(selectedFile.lastModified).toISOString().split('T')[0]
+        });
+       // console.log('[MarketingView] File selected and encoded:', selectedFile.name, selectedFile.size, 'bytes');
+      };
+      reader.readAsDataURL(selectedFile);
+    }
+  };
 
   const handleSubmit = () => {
-    if(!name) return;
-    onSubmit({ name, type });
+    if(!name || !file) {
+      alert('Please enter a name and select a file');
+      return;
+    }
+    
+    const tagArray = tags ? tags.split(',').map(t => t.trim()).filter(t => t) : [];
+    
+    onSubmit({ 
+      name, 
+      type,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      uploadDate: new Date().toISOString().split('T')[0],
+      description: description.trim(),
+      tags: tagArray,
+      fileData: fileData,  // Base64 encoded data
+      assetId: Date.now().toString(36) + Math.random().toString(36).substr(2),
+      downloadUrl: `/assets/${name.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}`
+    });
   };
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
-      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-sm shadow-2xl relative">
+      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-sm shadow-2xl relative max-h-[90vh] overflow-y-auto">
         <button onClick={onClose} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
         <h3 className="text-xl font-bold text-white mb-4">Upload Marketing Asset</h3>
         
@@ -347,17 +445,58 @@ const UploadAssetModal = ({ onClose, onSubmit }) => {
                     <option value="image">Image (JPG/PNG)</option>
                     <option value="zip">Archive (ZIP)</option>
                     <option value="doc">Document (PDF)</option>
+                    <option value="video">Video (MP4/MOV)</option>
                 </select>
             </div>
-            <div className="border-2 border-dashed border-neutral-700 rounded-lg p-8 text-center hover:border-amber-500/50 transition-colors cursor-pointer">
-                <Upload size={24} className="mx-auto text-neutral-500 mb-2"/>
-                <p className="text-xs text-neutral-400">Click to select file</p>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Description (Optional)</label>
+                <textarea 
+                    value={description} 
+                    onChange={e => setDescription(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none text-sm"
+                    placeholder="e.g. Promotional banners for Q4 campaign"
+                    rows="2"
+                />
+            </div>
+            <div>
+                <label className="text-xs uppercase text-neutral-500 font-bold">Tags (Optional)</label>
+                <input 
+                    type="text" 
+                    value={tags} 
+                    onChange={e => setTags(e.target.value)}
+                    className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-4 text-white focus:border-amber-500 focus:outline-none"
+                    placeholder="e.g. banners, q4, promo (comma-separated)"
+                />
+            </div>
+            <div 
+              onClick={() => fileInputRef.current?.click()}
+              className="border-2 border-dashed border-neutral-700 rounded-lg p-8 text-center hover:border-amber-500/50 transition-colors cursor-pointer"
+            >
+                {file ? (
+                  <div className="text-emerald-400">
+                    <FileCheck size={24} className="mx-auto mb-2"/>
+                    <p className="text-xs font-medium">{file.name}</p>
+                    <p className="text-xs text-neutral-400 mt-1">{file.size}</p>
+                  </div>
+                ) : (
+                  <div>
+                    <Upload size={24} className="mx-auto text-neutral-500 mb-2"/>
+                    <p className="text-xs text-neutral-400">Click to select file</p>
+                  </div>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleFileSelect}
+                  accept=".jpg,.jpeg,.png,.zip,.pdf,.mp4,.mov"
+                  className="hidden"
+                />
             </div>
         </div>
         <div className="mt-6">
             <button 
                 onClick={handleSubmit}
-                disabled={!name}
+                disabled={!name || !file}
                 className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 rounded-lg font-bold transition-colors"
             >
                 Upload Asset
@@ -386,16 +525,16 @@ const ClientDetailView = ({ client, onBack }) => {
         if (accountIds.length === 0) {
           // Fallback: fetch trading accounts by username
           const username = client.username || client.UserName || client.Email || client.id;
-          console.log(`No cached account IDs, fetching accounts for: ${username}`);
+         // console.log(`No cached account IDs, fetching accounts for: ${username}`);
           try {
             const accounts = await fetchTradingAccounts(username);
             accountIds = accounts.filter(a => a.isReal).map(a => a.id);
-            console.log(`Fetched ${accounts.length} accounts, ${accountIds.length} real accounts`);
+            // console.log(`Fetched ${accounts.length} accounts, ${accountIds.length} real accounts`);
           } catch (e) {
-            console.warn('fetchTradingAccounts failed:', e && (e.message || e));
+          //  console.warn('fetchTradingAccounts failed:', e && (e.message || e));
           }
         } else {
-          console.log(`Using cached account IDs for ${client.username}: ${accountIds.join(', ')}`);
+        //  console.log(`Using cached account IDs for ${client.username}: ${accountIds.join(', ')}`);
         }
 
         if (accountIds.length > 0) {
@@ -408,7 +547,7 @@ const ClientDetailView = ({ client, onBack }) => {
                 aggregated = aggregated.concat(accTrades.map(t => ({...t, _accountId: accId})));
               }
             } catch (e) {
-              console.warn(`Failed to fetch trades for account ${accId}:`, e && (e.message || e));
+              // console.warn(`Failed to fetch trades for account ${accId}:`, e && (e.message || e));
             }
           }
         } else if (client.id) {
@@ -417,13 +556,13 @@ const ClientDetailView = ({ client, onBack }) => {
             const fallbackTrades = await fetchClientTrades(client.id, '', '');
             if (Array.isArray(fallbackTrades)) aggregated = aggregated.concat(fallbackTrades);
           } catch (e) {
-            console.warn('Fallback fetchClientTrades failed:', e && (e.message || e));
+            // console.warn('Fallback fetchClientTrades failed:', e && (e.message || e));
           }
         }
 
         if (!cancelled) setHistory(aggregated || []);
       } catch (err) {
-        console.error('Load client history error:', err && (err.message || err));
+    //    console.error('Load client history error:', err && (err.message || err));
         if (!cancelled) setHistory([]);
       } finally {
         if (!cancelled) setIsLoadingHistory(false);
@@ -484,7 +623,7 @@ const ClientDetailView = ({ client, onBack }) => {
                 <p className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Activity size={12} className="mr-1"/> Activity</p>
                 <div className="space-y-2">
                     <div className="flex justify-between text-sm">
-                        <span className="text-neutral-400">Total Lots:</span>
+                        <span className="text-neutral-400">Total NV:</span>
                         <span className="text-amber-500 font-bold">{(typeof client.lots === 'number') ? client.lots.toFixed(2) : '0.00'}</span>
                     </div>
                     <div className="flex justify-between text-sm">
@@ -623,15 +762,15 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           const deposits = txns.filter(t => t.side === 1);
           const withdrawals = txns.filter(t => t.side === 2);
           const totalDep = deposits.reduce((s, t) => s + (t.depositedAmount || 0), 0);
-          console.log(`Loaded ${txns.length} transactions: ${deposits.length} deposits ($${totalDep.toFixed(2)}), ${withdrawals.length} withdrawals`);
+        //  console.log(`Loaded ${txns.length} transactions: ${deposits.length} deposits ($${totalDep.toFixed(2)}), ${withdrawals.length} withdrawals`);
           if (txns[0]) {
-            console.log('Sample tx:', { username: txns[0].username, side: txns[0].side, amount: txns[0].depositedAmount, date: txns[0].date });
+        //    console.log('Sample tx:', { username: txns[0].username, side: txns[0].side, amount: txns[0].depositedAmount, date: txns[0].date });
           }
         } else {
-          console.log('No transactions loaded');
+        //  console.log('No transactions loaded');
         }
       } catch (err) {
-        console.error('Failed to load transactions:', err);
+     //   console.error('Failed to load transactions:', err);
       }
     };
     
@@ -662,7 +801,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
     
     const currentSignal = abortControllerRef.current.signal;
     
-    console.log(`[Request ${requestId}] Starting for ${timeRange}`);
+    //console.log(`[Request ${requestId}] Starting for ${timeRange}`);
 
     const loadTradeHistory = async () => {
       try {
@@ -673,11 +812,11 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           if (lifetimeData.totalVolume > 0) {
             // Check if request was cancelled before using stored data
             if (currentSignal.aborted) {
-              console.log(`[Request ${requestId}] Cancelled before setting lifetime data`);
+             // console.log(`[Request ${requestId}] Cancelled before setting lifetime data`);
               return;
             }
             // Use stored lifetime data
-            console.log(`[Request ${requestId}] Using stored lifetime data: ${lifetimeData.totalVolume}`);
+            //console.log(`[Request ${requestId}] Using stored lifetime data: ${lifetimeData.totalVolume}`);
             setLocalTradeHistory(lifetimeData);
             setTotalVolume(lifetimeData.totalVolume);
             setRevenue(lifetimeData.totalRevenue || revenue);
@@ -689,10 +828,10 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           // Check if parent already has data (from initial fetchNetworkStats)
           if (totalVolume > 0 || revenue > 0) {
             if (currentSignal.aborted) {
-              console.log(`[Request ${requestId}] Cancelled before setting parent data`);
+          //    console.log(`[Request ${requestId}] Cancelled before setting parent data`);
               return;
             }
-            console.log(`[Request ${requestId}] Using parent data for Lifetime: ${totalVolume}`);
+            //console.log(`[Request ${requestId}] Using parent data for Lifetime: ${totalVolume}`);
             setLocalTradeHistory({ trades: parentTradeHistory || [], totalVolume, totalPL: 0, totalRevenue: revenue });
             setLifetimeData({ trades: parentTradeHistory || [], totalVolume, totalPL: 0, totalRevenue: revenue });
             setIsLoadingTrades(false);
@@ -700,12 +839,12 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           }
           
           // Only re-fetch if we truly have no data
-          console.log(`[Request ${requestId}] Re-fetching Lifetime data...`);
+       //   console.log(`[Request ${requestId}] Re-fetching Lifetime data...`);
           const history = await fetchVolumeHistory('Lifetime');
           
           // Check if this request was cancelled
           if (currentSignal.aborted) {
-            console.log(`[Request ${requestId}] Cancelled after Lifetime fetch`);
+         //   console.log(`[Request ${requestId}] Cancelled after Lifetime fetch`);
             return;
           }
           
@@ -715,14 +854,14 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           setTotalVolume(history.totalVolume || 0);
           setRevenue(history.totalRevenue || 0);
           setTotalPL(history.totalPL || 0);
-          console.log(`[Request ${requestId}] Lifetime data updated successfully`);
+        //  console.log(`[Request ${requestId}] Lifetime data updated successfully`);
         } else {
-          console.log(`[Request ${requestId}] Fetching volume history for ${timeRange}`);
+          //console.log(`[Request ${requestId}] Fetching volume history for ${timeRange}`);
           const history = await fetchVolumeHistory(timeRange);
           
           // Check if this request was cancelled
           if (currentSignal.aborted) {
-            console.log(`[Request ${requestId}] Cancelled after ${timeRange} fetch`);
+        //    console.log(`[Request ${requestId}] Cancelled after ${timeRange} fetch`);
             return;
           }
           
@@ -731,13 +870,13 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           setTotalVolume(history.totalVolume || 0);
           setRevenue(history.totalRevenue || 0);
           setTotalPL(history.totalPL || 0);
-          console.log(`[Request ${requestId}] ${timeRange} data updated successfully`);
+        //  console.log(`[Request ${requestId}] ${timeRange} data updated successfully`);
         }
       } catch (err) {
         if (!currentSignal.aborted) {
-          console.error(`[Request ${requestId}] Failed to load trade history:`, err);
+        //  console.error(`[Request ${requestId}] Failed to load trade history:`, err);
         } else {
-          console.log(`[Request ${requestId}] Request was cancelled, ignoring error`);
+       //   console.log(`[Request ${requestId}] Request was cancelled, ignoring error`);
         }
       } finally {
         // Only clear loading if this request wasn't cancelled
@@ -752,7 +891,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
     // Cleanup: cancel request if component unmounts or timeRange changes
     return () => {
       if (abortControllerRef.current) {
-        console.log(`[Request ${requestId}] Cleanup: Aborting request`);
+        //console.log(`[Request ${requestId}] Cleanup: Aborting request`);
         abortControllerRef.current.abort();
       }
     };
@@ -847,14 +986,14 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
     // - Other ranges: clients who had trades in that time range
     
     if (!clients || clients.length === 0) {
-      console.log(`[Deposits] No clients available`);
+     // console.log(`[Deposits] No clients available`);
       return 0;
     }
     
     // For Lifetime: sum ALL client deposits
     if (timeRange === 'Lifetime') {
       const allDeposits = clients.reduce((sum, c) => sum + (c.deposit || 0), 0);
-      console.log(`[Deposits] Lifetime: ALL ${clients.length} clients, deposits = $${allDeposits.toFixed(2)}`);
+    //  console.log(`[Deposits] Lifetime: ALL ${clients.length} clients, deposits = $${allDeposits.toFixed(2)}`);
       return allDeposits;
     }
     
@@ -863,14 +1002,14 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
     const clientsToSum = (filteredClients && filteredClients.length > 0) ? filteredClients : [];
     const rangeDeposits = clientsToSum.reduce((sum, c) => sum + (c.deposit || 0), 0);
     
-    console.log(`[Deposits] ${timeRange}: ${clientsToSum.length} clients with trades, deposits = $${rangeDeposits.toFixed(2)}`);
+   // console.log(`[Deposits] ${timeRange}: ${clientsToSum.length} clients with trades, deposits = $${rangeDeposits.toFixed(2)}`);
     return rangeDeposits;
   };
   
   const totalDeposits = calculateDepositsForRange();
   
   // Debug metrics (use parent totals passed into component)
-  console.log(`Time Range: ${timeRange}, Clients: ${filteredClients.length}, Volume: ${totalVolume.toFixed ? totalVolume.toFixed(2) : totalVolume}, Revenue: ${revenue.toFixed ? revenue.toFixed(2) : revenue}, Deposits: ${totalDeposits}`);
+ // console.log(`Time Range: ${timeRange}, Clients: ${filteredClients.length}, Volume: ${totalVolume.toFixed ? totalVolume.toFixed(2) : totalVolume}, Revenue: ${revenue.toFixed ? revenue.toFixed(2) : revenue}, Deposits: ${totalDeposits}`);
 
   // Simplified metrics - trends are placeholder
   const currentMetrics = {
@@ -949,7 +1088,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
       { type: 'signup', msg: `${client.name || 'New client'} registered from ${client.country || 'Unknown'}`, icon: Users, color: 'text-blue-400', time: client.registeredAt || client.createdAt || client.updatedAt },
       { type: 'deposit', msg: `${client.name || 'Client'} deposited $${(client.deposit || 0).toLocaleString()}`, icon: Wallet, color: 'text-emerald-400', time: client.lastDepositAt || client.updatedAt || client.createdAt },
       { type: 'kyc', msg: `${client.name || 'Client'} - KYC ${client.kycStatus || 'Pending'}`, icon: FileText, color: 'text-amber-400', time: client.kycUpdatedAt || client.updatedAt || client.createdAt },
-      { type: 'trade', msg: `${client.name || 'Client'} traded ${computeClientLots(client).toFixed(2)} lots`, icon: Activity, color: 'text-purple-400', time: client.lastTradeAt || client.updatedAt || client.createdAt }
+      { type: 'trade', msg: `${client.name || 'Client'} traded ${computeClientLots(client).toFixed(2)} NV`, icon: Activity, color: 'text-purple-400', time: client.lastTradeAt || client.updatedAt || client.createdAt }
     ];
     const typeData = types[i % 4];
     return {
@@ -1059,7 +1198,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
         <StatCard title="Total Revenue" value={`$${currentMetrics.revenue.toLocaleString()}`} subtext={timeRange} trend={currentMetrics.revTrend} trendUp={!currentMetrics.revTrend.includes('-')} icon={DollarSign} isLoading={isLoadingTrades} />
         <StatCard title="Active Clients" value={activeClients} subtext="Live accounts (Current)" trend="+5.2%" trendUp={true} icon={Users} isLoading={false} />
         <StatCard title="Total Deposits" value={`$${currentMetrics.deposits.toLocaleString()}`} subtext={timeRange} trend={currentMetrics.depTrend} trendUp={!currentMetrics.depTrend.includes('-')} icon={Wallet} isLoading={isLoadingTrades} />
-        <StatCard title="Network Volume" value={`${currentMetrics.volume.toLocaleString()}`} subtext={`${timeRange} (Lots)`} trend={currentMetrics.volTrend} trendUp={!currentMetrics.volTrend.includes('-')} icon={Activity} isLoading={isLoadingTrades} />
+        <StatCard title="Network Volume" value={`${currentMetrics.volume.toLocaleString()}`} subtext={`${timeRange} (NV)`} trend={currentMetrics.volTrend} trendUp={!currentMetrics.volTrend.includes('-')} icon={Activity} isLoading={isLoadingTrades} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1067,7 +1206,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
           <div className="flex justify-between items-center mb-6">
              <div>
                <h3 className="font-bold text-white">Trading Volume History</h3>
-               <p className="text-xs text-neutral-500 mt-0.5">Total lots traded by your direct clients</p>
+               <p className="text-xs text-neutral-500 mt-0.5">Total NV traded by your direct clients</p>
              </div>
              <div className="text-xs text-neutral-500 font-mono bg-neutral-950 px-2 py-1 rounded border border-neutral-800">
                 Viewing: {timeRange}
@@ -1229,7 +1368,7 @@ const DashboardView = ({ clients, apiStatus, onNavigate, clientUsernames, setTot
                   {chartData.map((data, i) => (
                     <div key={i} className="flex-1 flex flex-col relative group h-full">
                       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-neutral-800 text-xs text-white p-2 rounded border border-neutral-700 whitespace-nowrap z-10 shadow-xl">
-                        {data.label}: {data.value.toFixed(2)} Lots ({data.tradeCount || 0} trades)
+                        {data.label}: {data.value.toFixed(2)} NV ({data.tradeCount || 0} trades)
                       </div>
                       <div className="flex-1 flex items-end">
                         <div 
@@ -1361,7 +1500,7 @@ const ClientsView = ({ clients }) => {
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-neutral-800/50 text-neutral-400 text-xs uppercase font-semibold tracking-wider border-b border-neutral-800">
-              <th className="p-4">Name / Contact</th><th className="p-4">Country</th><th className="p-4">KYC Status</th><th className="p-4 text-right">Net Deposit</th><th className="p-4 text-right">Equity (Live)</th><th className="p-4 text-right">Lots Traded</th><th className="p-4">Risk Level</th><th className="p-4 text-center">Actions</th>
+              <th className="p-4">Name / Contact</th><th className="p-4">Country</th><th className="p-4">KYC Status</th><th className="p-4 text-right">Net Deposit</th><th className="p-4 text-right">Equity (Live)</th><th className="p-4 text-right">NV Traded</th><th className="p-4">Risk Level</th><th className="p-4 text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-800">
@@ -1399,48 +1538,204 @@ const ClientsView = ({ clients }) => {
 };
 
 // C. UPDATED MARKETING VIEW (With Assets & Admin Mode)
-const MarketingView = ({ userRole }) => {
+const MarketingView = ({ userRole, clients, apiStatus }) => {
   const [subTab, setSubTab] = useState('links');
-  const [campaigns, setCampaigns] = useState([]);  // Will be fetched from API
-  const [assets, setAssets] = useState([]);  // Will be fetched from API
+  const [campaigns, setCampaigns] = useState([]);
+  const [campaignStats, setCampaignStats] = useState({});
+  const [assets, setAssets] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  const handleAddCampaign = (newCampaign) => {
-    const id = campaigns.length + 1;
-    const campaignObj = {
-      id,
-      name: newCampaign.name,
-      tag: newCampaign.tag,
-      clicks: 0,
-      signups: 0,
-      ftd: 0,
-      commission: 0
-    };
-    setCampaigns([...campaigns, campaignObj]);
-    setShowModal(false);
+  // Fetch campaigns and assets on mount and when clients change
+  useEffect(() => {
+    loadCampaignsAndAssets();
+  }, [clients, apiStatus]);
+
+  const loadCampaignsAndAssets = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Load campaigns from Supabase (with localStorage fallback)
+      const saved = await getCampaigns();
+      setCampaigns(saved);
+   //   console.log('[MarketingView] Loaded campaigns from Supabase:', saved.length);
+      
+      // Load assets from Supabase (with localStorage fallback)
+      const savedAssets = await getAssets();
+      setAssets(savedAssets);
+     // console.log('[MarketingView] Loaded assets from Supabase:', savedAssets.length);
+      
+      // Fetch stats for each campaign from XValley
+      if (saved.length > 0 && clients && clients.length > 0 && apiStatus === 'connected') {
+        const stats = {};
+        for (const campaign of saved) {
+          const campaignData = await getCampaignStats(campaign.referrerTag, clients);
+          stats[campaign.id] = campaignData;
+        }
+        setCampaignStats(stats);
+       // console.log('[MarketingView] Campaign stats loaded from XValley');
+      }
+    } catch (err) {
+    //  console.error('[MarketingView] Load error:', err);
+      setError('Failed to load marketing data');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleAddAsset = (newAsset) => {
-    const id = assets.length + 1;
-    const assetObj = {
-        id,
+  // Handle new campaign creation - integrated with backend
+  const handleAddCampaign = async (newCampaign) => {
+    try {
+      setIsLoading(true);
+      
+      // Save campaign to Supabase
+      const campaignObj = {
+        name: newCampaign.name,
+        referrerTag: newCampaign.referrerTag,
+        description: newCampaign.description || '',
+        cost: parseFloat(newCampaign.cost) || 0,
+        startDate: new Date().toISOString(),
+        endDate: newCampaign.endDate || null,
+        materials: [],
+        status: 'active'
+      };
+      
+      const id = await saveCampaign(campaignObj);
+      
+      // Reload campaigns
+      await loadCampaignsAndAssets();
+      
+    //  console.log('[MarketingView] Campaign created:', id);
+      setShowModal(false);
+    } catch (err) {
+    //  console.error('[MarketingView] Campaign creation error:', err);
+      setError('Failed to create campaign');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle new asset upload - integrated with Supabase backend
+  const handleAddAsset = async (newAsset) => {
+    try {
+      setIsLoading(true);
+
+      // Save asset to Supabase with file data
+      const assetObj = {
         name: newAsset.name,
         type: newAsset.type,
-        size: "1.5 MB", // Mock size
-        date: new Date().toISOString().split('T')[0]
-    };
-    setAssets([...assets, assetObj]);
-    setShowUploadModal(false);
+        fileName: newAsset.fileName,
+        fileSize: newAsset.fileSize || 'Unknown',
+        fileType: newAsset.fileType,
+        uploadDate: new Date().toISOString(),
+        description: newAsset.description || '',
+        fileData: newAsset.fileData,  // Base64 encoded for small files
+        downloadUrl: `/assets/${newAsset.fileName}`,
+        tags: newAsset.tags || []
+      };
+
+      const id = await saveAsset(assetObj);
+      
+      // Reload assets
+      const updated = await getAssets();
+      setAssets(updated);
+      setShowUploadModal(false);
+      
+      //console.log('[MarketingView] Asset uploaded:', id);
+    } catch (err) {
+     // console.error('[MarketingView] Asset upload error:', err);
+      setError('Failed to upload asset');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const copyCampaignLink = (tag, id) => {
-    const ibParam = getSessionPartnerId() || '';
-    const link = `https://nommia.com/register?ib=${ibParam}&c=${encodeURIComponent(tag)}`;
-    navigator.clipboard.writeText(link);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  // Generate campaign referral link with Referrer field and ReferralCode
+  const copyCampaignLink = async (tag, campaignReferrer, campaignReferralCode, id) => {
+    try {
+      const ibParam = getSessionPartnerId() || campaignReferralCode || '';
+      
+      // BACKEND INTEGRATION POINT: POST /api/campaigns/{campaignId}/track
+      // Uncomment when backend is ready to track clicks:
+      // await trackCampaignClick(id, campaignReferrer);
+      
+      const link = `https://nommia.com/register?ib=${encodeURIComponent(ibParam)}&campaign=${encodeURIComponent(tag)}&referrer=${encodeURIComponent(campaignReferrer)}`;
+      
+      navigator.clipboard.writeText(link);
+      setCopiedId(id);
+      
+  
+      
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+     // console.error('[MarketingView] Copy link error:', err);
+    }
+  };
+
+  // Download asset
+  const handleDownloadAsset = async (asset) => {
+    try {
+      const isStorageUrl = asset.fileData && (asset.fileData.includes('supabase.co') || asset.fileData.includes('storage.googleapis.com'));
+      console.log('[MarketingView] Starting download for asset:', {
+        name: asset.name,
+        hasFileData: !!asset.fileData,
+        isStorageUrl,
+        fileDataPrefix: asset.fileData ? asset.fileData.substring(0, 50) : 'none'
+      });
+      
+      if (asset.fileData) {
+        try {
+          if (isStorageUrl) {
+            // Fetch from Storage URL
+            const response = await fetch(asset.fileData);
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const blob = await response.blob();
+            
+            // Create download link
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = asset.fileName || asset.name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            
+            //console.log('[MarketingView] Asset downloaded:', asset.fileName);
+          } else if (asset.fileData.startsWith('data:')) {
+            // Convert base64 data URL to blob
+            const response = await fetch(asset.fileData);
+            const blob = await response.blob();
+            
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = asset.fileName || asset.name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            
+          //  console.log('[MarketingView] Base64 asset downloaded:', asset.fileName);
+          } else {
+            throw new Error('Invalid file data format');
+          }
+        } catch (fetchErr) {
+        //  console.error('[MarketingView] Fetch/blob error:', fetchErr);
+          setError(`Failed to download: ${fetchErr.message}`);
+        }
+      } else {
+        alert(`Cannot download: ${asset.fileName || asset.name} - No file data available`);
+      }
+    } catch (err) {
+    //  console.error('[MarketingView] Download error:', err);
+      setError(`Failed to download ${asset.fileName}`);
+    }
   };
 
   return (
@@ -1493,42 +1788,62 @@ const MarketingView = ({ userRole }) => {
                 <thead>
                     <tr className="border-b border-neutral-800 text-xs font-semibold text-neutral-500 uppercase tracking-wider">
                         <th className="pb-3 pl-2">Campaign Name</th>
-                        <th className="pb-3">Tracking Tag</th>
-                        <th className="pb-3 text-right">Clicks</th>
-                        <th className="pb-3 text-right">Sign Ups</th>
-                        <th className="pb-3 text-right">FTD</th>
-                        <th className="pb-3 text-right">Conversion</th>
-                        <th className="pb-3 text-right">Commission</th>
+                        <th className="pb-3">Referrer Tag</th>
+                        <th className="pb-3 text-right">Signups</th>
+                        <th className="pb-3 text-right">Active</th>
+                        <th className="pb-3 text-right">Revenue</th>
+                        <th className="pb-3 text-right">Cost</th>
+                        <th className="pb-3 text-right">ROI</th>
                         <th className="pb-3 text-center">Link</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800">
-                  {campaigns.map(camp => (
-                    <tr key={camp.id} className="text-sm hover:bg-neutral-800/30 transition-colors">
-                      <td className="py-4 pl-2 font-medium text-neutral-200">{camp.name}</td>
-                      <td className="py-4 text-neutral-500 font-mono text-xs">{camp.tag}</td>
-                      <td className="py-4 text-right text-neutral-400">{camp.clicks.toLocaleString()}</td>
-                      <td className="py-4 text-right text-neutral-400">{camp.signups}</td>
-                      <td className="py-4 text-right font-bold text-neutral-200">{camp.ftd}</td>
-                      <td className="py-4 text-right">
-                        <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-full text-xs">
-                           {camp.clicks > 0 ? ((camp.ftd / camp.clicks) * 100).toFixed(2) : "0.00"}%
-                        </span>
-                      </td>
-                      <td className="py-4 text-right font-bold text-amber-500">+${camp.commission.toLocaleString()}</td>
-                      <td className="py-4 text-center">
-                        <button 
-                            onClick={() => copyCampaignLink(camp.tag, camp.id)}
-                            className="text-neutral-500 hover:text-amber-500 transition-colors"
-                            title="Copy Campaign Link"
-                        >
-                            {copiedId === camp.id ? <span className="text-emerald-500 text-xs font-bold">Copied</span> : <Copy size={16} />}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {campaigns.map(camp => {
+                    const stats = campaignStats[camp.id] || { signups: 0, activeClients: 0, totalRevenue: 0 };
+                    const roi = camp.cost > 0 
+                      ? Math.round(((stats.totalRevenue - camp.cost) / camp.cost) * 100)
+                      : stats.totalRevenue > 0 ? 100 : 0;
+                    
+                    return (
+                      <tr key={camp.id} className="text-sm hover:bg-neutral-800/30 transition-colors">
+                        <td className="py-4 pl-2 font-medium text-neutral-200">{camp.name}</td>
+                        <td className="py-4 text-neutral-500 font-mono text-xs">{camp.referrerTag}</td>
+                        <td className="py-4 text-right font-bold text-neutral-200">{stats.signups}</td>
+                        <td className="py-4 text-right text-neutral-400">
+                          <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-full text-xs">
+                            {stats.activeClients}
+                          </span>
+                        </td>
+                        <td className="py-4 text-right font-bold text-amber-500">${stats.totalRevenue.toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+                        <td className="py-4 text-right text-neutral-400">${camp.cost.toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+                        <td className="py-4 text-right">
+                          <span className={`px-2 py-1 rounded-full text-xs font-bold border ${
+                            roi >= 0 
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                              : 'bg-red-500/10 text-red-400 border-red-500/20'
+                          }`}>
+                            {roi >= 0 ? '+' : ''}{roi}%
+                          </span>
+                        </td>
+                        <td className="py-4 text-center">
+                          <button 
+                              onClick={() => copyCampaignLink(camp.referrerTag, camp.referrerTag, getSessionPartnerId(), camp.id)}
+                              className="text-neutral-500 hover:text-amber-500 transition-colors"
+                              title={`Copy Campaign Link\nReferrer: ${camp.referrerTag}`}
+                          >
+                              {copiedId === camp.id ? <span className="text-emerald-500 text-xs font-bold">Copied</span> : <Copy size={16} />}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+              {campaigns.length === 0 && (
+                <div className="text-center py-8 text-neutral-500">
+                  <p>No campaigns yet. Create one to start tracking referrals!</p>
+                </div>
+              )}
             </div>
           </div>
         </>
@@ -1553,24 +1868,93 @@ const MarketingView = ({ userRole }) => {
 
             {/* Asset Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {assets.map((asset) => (
+            {assets.map((asset) => {
+              // Validate fileData is a valid URL or data URL
+              const isValidFileData = asset.fileData && typeof asset.fileData === 'string' && asset.fileData.length > 10 && (
+                asset.fileData.startsWith('data:') || 
+                asset.fileData.startsWith('blob:') ||
+                asset.fileData.startsWith('http')
+              );
+              const hasImagePreview = asset.type === 'image' && isValidFileData;
+              
+              return (
                 <div key={asset.id} className="bg-neutral-900 p-4 rounded-xl border border-neutral-800 group hover:border-amber-500/50 transition-all">
                     <div className="h-32 bg-neutral-950 rounded-lg flex items-center justify-center mb-4 border border-neutral-800 relative overflow-hidden">
-                        {asset.type === 'image' ? <Image size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" /> : 
-                         asset.type === 'zip' ? <File size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" /> :
-                         <FileText size={48} className="text-neutral-700 group-hover:text-amber-500 transition-colors" />}
+                        {hasImagePreview && (
+                          <img 
+                            src={asset.fileData} 
+                            alt={asset.name}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            onError={(e) => {
+                              console.warn('[MarketingView] Image load failed for asset:', asset.name);
+                              e.target.style.display = 'none';
+                              if (e.target.nextElementSibling) {
+                                e.target.nextElementSibling.style.display = 'flex';
+                              }
+                            }}
+                          />
+                        )}
+                        <div className="flex items-center justify-center w-full h-full text-neutral-700 group-hover:text-amber-500 transition-colors"
+                             style={hasImagePreview ? {display: 'none'} : {}}>
+                          {asset.type === 'image' ? <Image size={48} /> : 
+                           asset.type === 'zip' ? <File size={48} /> :
+                           asset.type === 'video' ? <FileText size={48} /> :
+                           <FileText size={48} />}
+                        </div>
                     </div>
                     <div className="flex justify-between items-start">
                         <div>
                             <h4 className="font-bold text-white text-sm">{asset.name}</h4>
-                            <p className="text-xs text-neutral-500 mt-1">{asset.type.toUpperCase()} • {asset.size}</p>
+                            <p className="text-xs text-neutral-500 mt-1">{asset.type.toUpperCase()} • {asset.fileSize}</p>
+                            {asset.description && <p className="text-xs text-neutral-400 mt-2">{asset.description}</p>}
+                            {asset.tags && asset.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {asset.tags.map((tag, idx) => (
+                                  <span key={idx} className="text-xs bg-neutral-800 text-neutral-300 px-2 py-1 rounded">#{tag}</span>
+                                ))}
+                              </div>
+                            )}
                         </div>
+                        {userRole === 'Admin' && (
+                          <button 
+                            onClick={async () => {
+                              if (window.confirm(`Delete asset "${asset.name}"?`)) {
+                                await deleteAsset(asset.id);
+                                const updated = await getAssets();
+                                setAssets(updated);
+                             //   console.log('[MarketingView] Asset deleted:', asset.id);
+                              }
+                            }}
+                            className="text-neutral-500 hover:text-red-500 transition-colors ml-2"
+                            title="Delete asset"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
                     </div>
-                    <button className="w-full py-2 border border-neutral-700 hover:bg-neutral-800 text-amber-500 rounded-lg text-sm font-medium mt-4 flex items-center justify-center transition-colors">
-                        <Download size={14} className="mr-2"/> Download
-                    </button>
+                    <div className="flex gap-2 mt-4">
+                      <button 
+                        onClick={() => handleDownloadAsset(asset)}
+                        className="flex-1 py-2 border border-neutral-700 hover:bg-neutral-800 text-amber-500 rounded-lg text-sm font-medium flex items-center justify-center transition-colors"
+                      >
+                          <Download size={14} className="mr-2"/> Download
+                      </button>
+                      {userRole === 'Admin' && (
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(`[Asset] ${asset.name} - ${asset.description || asset.type}`);
+                            alert("Asset info copied!");
+                          }}
+                          className="px-3 py-2 border border-neutral-700 hover:bg-neutral-800 text-neutral-500 hover:text-amber-500 rounded-lg text-sm transition-colors"
+                          title="Copy asset info"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      )}
+                    </div>
                 </div>
-            ))}
+              );
+            })}
             </div>
         </div>
       )}
@@ -1582,8 +1966,28 @@ const MarketingView = ({ userRole }) => {
 const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propRevenue, apiStatus }) => {
   const [dateRange, setDateRange] = useState('This Month');
   const [localVolumeData, setLocalVolumeData] = useState({ totalVolume: 0, totalRevenue: 0, trades: [] });
+  const [threeMonthHistory, setThreeMonthHistory] = useState([0, 0, 0]); // [month1, month2, month3]
   const [isLoading, setIsLoading] = useState(false);
   const requestIdRef = useRef(0);
+  
+  // Fetch 3-month commission history once on component mount
+  useEffect(() => {
+    if (apiStatus !== 'connected') return;
+    
+    const fetch3MonthData = async () => {
+      try {
+      //  console.log('[Reports] Fetching 3-month commission history for bonus tier calculation...');
+        const history = await fetch3MonthCommissionHistory();
+        setThreeMonthHistory(history);
+       // console.log('[Reports] 3-month history loaded:', history);
+      } catch (err) {
+       // console.error('[Reports] Failed to fetch 3-month history:', err);
+        setThreeMonthHistory([0, 0, 0]);
+      }
+    };
+    
+    fetch3MonthData();
+  }, [apiStatus]);
   
   // Fetch data when dateRange changes
   useEffect(() => {
@@ -1591,7 +1995,7 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
     
     // Increment request ID to track latest request
     const requestId = ++requestIdRef.current;
-    console.log(`[Reports] Starting request ${requestId} for ${dateRange}`);
+   // console.log(`[Reports] Starting request ${requestId} for ${dateRange}`);
     
     const fetchData = async () => {
       setIsLoading(true);
@@ -1607,13 +2011,13 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
           'Lifetime': 'Lifetime'
         };
         const mappedRange = timeRangeMap[dateRange] || 'Lifetime';
-        console.log(`[Reports] Fetching volume history for ${dateRange} (mapped to ${mappedRange})`);
+       // console.log(`[Reports] Fetching volume history for ${dateRange} (mapped to ${mappedRange})`);
         
         const history = await fetchVolumeHistory(mappedRange);
         
         // Check if this request is still current (not stale)
         if (requestId !== requestIdRef.current) {
-          console.log(`[Reports] Stale ${dateRange} request ${requestId}, current is ${requestIdRef.current}, ignoring result`);
+          //console.log(`[Reports] Stale ${dateRange} request ${requestId}, current is ${requestIdRef.current}, ignoring result`);
           return;
         }
         
@@ -1622,9 +2026,9 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
           totalRevenue: history.totalRevenue || 0,
           trades: history.trades || []
         });
-        console.log(`[Reports] Data loaded: Volume=${history.totalVolume}, Revenue=$${history.totalRevenue}`);
+      //  console.log(`[Reports] Data loaded: Volume=${history.totalVolume}, Revenue=$${history.totalRevenue}`);
       } catch (err) {
-        console.error('Failed to fetch reports data:', err);
+      //  console.error('Failed to fetch reports data:', err);
       } finally {
         // Only clear loading if this is still the current request
         if (requestId === requestIdRef.current) {
@@ -1719,16 +2123,6 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
   // Use local data fetched based on dateRange for revenue - FIXED: Don't compute default when we have real data
   const totalRevenue = localVolumeData.totalRevenue !== undefined ? localVolumeData.totalRevenue : propRevenue || 0;
 
-  /**
-   * PERFORMANCE BONUS CALCULATION (Per Tier Bonus Documentation)
-   * Based on 3-month rolling average:
-   * - Tier 1: $450 - $999.99 monthly commission → 4% bonus
-   * - Tier 2: $1,000 - $4,499.99 monthly commission → 8% bonus  
-   * - Tier 3: $4,500+ monthly commission → 10% bonus
-   * 
-   * For new IBs: Month 1 uses just that month, Month 2 uses 2-month avg,
-   * Month 3+ uses 3-month rolling average
-   */
   const calculateBonusTier = (threeMonthCommissions) => {
     // threeMonthCommissions: array of up to 3 monthly commission values [oldest, ..., newest]
     const validMonths = threeMonthCommissions.filter(c => c !== null && c !== undefined);
@@ -1747,14 +2141,14 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
     }
   };
 
-  // Current month's commission = this IB's actual revenue from their clients' trades
   const currentMonthCommission = totalRevenue;
   
-  // Example: simulate 3-month history (in production, fetch from API)
-  // For now, just use current month for new IBs
-  const threeMonthHistory = [currentMonthCommission]; // Would be [month1, month2, month3] with real data
+  const effectiveThreeMonthHistory = [
+    ...(threeMonthHistory.slice(0, 2)), // Previous months (month 1-2)
+    currentMonthCommission // Current month
+  ];
   
-  const bonusTierInfo = calculateBonusTier(threeMonthHistory);
+  const bonusTierInfo = calculateBonusTier(effectiveThreeMonthHistory);
   const bonusAmount = currentMonthCommission * bonusTierInfo.rate;
   const totalWithBonus = totalRevenue + bonusAmount;
 
@@ -1768,7 +2162,9 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
 
   // Get the actual totalVolume from API data, respecting 0 values
   const totalVolumeDisplay = localVolumeData.totalVolume !== undefined ? localVolumeData.totalVolume : propTotalVolume || 0;
-  const totalRevenueDisplay = localVolumeData.totalRevenue !== undefined ? localVolumeData.totalRevenue : propRevenue || 0;
+  
+  // FIXED: Display Revenue = Base Commission + Tier Bonus
+  const totalRevenueDisplay = localVolumeData.totalRevenue !== undefined ? totalWithBonus : propRevenue || 0;
   
   const handleDownloadStatement = () => {
     // 1. Initialize PDF
@@ -1791,7 +2187,7 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
       c.status || 'N/A',
       `$${(c.deposit || 0).toLocaleString()}`,
       `${(c.lots || 0).toFixed(2)}`,
-      `$${((c.lots || 0) * 4.5).toFixed(2)}`
+      `$${(c.baseCommission || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` // From XValley
     ]) : [['No data available', '', '', '', '']];
 
     // 4. Generate Table
@@ -1804,13 +2200,17 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
       styles: { fontSize: 9 },
     });
 
-    // Add summary
+    // Add summary with commission breakdown
     const finalY = doc.lastAutoTable.finalY + 10;
     doc.setFontSize(12);
     doc.setTextColor(0);
     doc.text(`Total Clients: ${totalClients}`, 14, finalY);
-    doc.text(`Total Volume: ${totalVolumeDisplay.toFixed(2)} Lots`, 14, finalY + 7);
-    doc.text(`Total Commission: $${totalRevenueDisplay.toFixed(2)}`, 14, finalY + 14);
+    doc.text(`Total Volume: ${totalVolumeDisplay.toFixed(2)} NV`, 14, finalY + 7);
+    doc.text(`Base Commission: $${totalRevenue.toFixed(2)}`, 14, finalY + 14);
+    doc.text(`Tier Bonus (${bonusTierInfo.tier} ${bonusTierInfo.label}): $${bonusAmount.toFixed(2)}`, 14, finalY + 21);
+    doc.setFontSize(13);
+    doc.setTextColor(245, 158, 11); // Amber color
+    doc.text(`Total Revenue: $${totalRevenueDisplay.toFixed(2)}`, 14, finalY + 30);
 
     // 5. Save PDF
     doc.save(`Nommia_Statement_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -1894,8 +2294,33 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
           )}
           <p className="text-xs text-neutral-500 uppercase font-bold">Total Volume</p>
           <div className="flex items-end justify-between mt-2">
-            <span className={`text-2xl font-bold text-amber-500 ${isLoading ? 'opacity-50' : ''}`}>{totalVolumeDisplay.toFixed(2)} Lots</span>
+            <span className={`text-2xl font-bold text-amber-500 ${isLoading ? 'opacity-50' : ''}`}>{totalVolumeDisplay.toFixed(2)} NV </span>
             <span className="text-xs text-neutral-400 flex items-center bg-neutral-800 px-2 py-1 rounded">{clients.length > 0 ? 'Live' : 'No trades'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 2.5 Revenue Breakdown (Commission + Bonus) */}
+      <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800">
+        <h3 className="font-bold text-white mb-4 flex items-center"><TrendingUp size={18} className="mr-2 text-amber-500"/> Revenue Breakdown</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-neutral-800 p-4 rounded-lg">
+            <p className="text-xs text-neutral-400 uppercase font-bold mb-2">Base Commission</p>
+            <p className="text-xl font-bold text-white">${totalRevenue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+            <p className="text-xs text-neutral-500 mt-1">From XValley (all instruments/tiers)</p>
+          </div>
+          <div className="bg-neutral-800 p-4 rounded-lg">
+            <p className="text-xs text-neutral-400 uppercase font-bold mb-2">Tier Bonus</p>
+            <div className="flex items-end gap-2">
+              <p className="text-xl font-bold text-amber-500">${bonusAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+              <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-1 rounded">{bonusTierInfo.tier}</span>
+            </div>
+            <p className="text-xs text-neutral-500 mt-1">{bonusTierInfo.label} on 3-month avg</p>
+          </div>
+          <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-lg">
+            <p className="text-xs text-amber-300 uppercase font-bold mb-2">Total Revenue</p>
+            <p className="text-xl font-bold text-amber-400">${totalRevenueDisplay.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+            <p className="text-xs text-neutral-500 mt-1">Commission + Bonus</p>
           </div>
         </div>
       </div>
@@ -1979,7 +2404,7 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
                 <th className="p-3">Client</th>
                 <th className="p-3">Status</th>
                 <th className="p-3 text-right">Deposits</th>
-                <th className="p-3 text-right">Volume (Lots)</th>
+                <th className="p-3 text-right">Volume (NV)</th>
                 <th className="p-3 text-right">Commission</th>
               </tr>
             </thead>
@@ -1994,7 +2419,7 @@ const ReportsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
                   </td>
                   <td className="p-3 text-right text-emerald-400">+${(client.deposit || 0).toLocaleString()}</td>
                   <td className="p-3 text-right text-white">{(client.lots || 0).toFixed(2)}</td>
-                  <td className="p-3 text-right font-bold text-amber-500">${((client.lots || 0) * 5).toFixed(2)}</td>
+                  <td className="p-3 text-right font-bold text-amber-500">${(client.baseCommission || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                 </tr>
               )) : (
                 <tr>
@@ -2122,26 +2547,16 @@ const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
     loadWithdrawals();
   }, [showWithdraw, payoutTimeFilter]); // Refresh after withdrawal request or time filter change - FIXED: Added payoutTimeFilter
   
-  // Calculate commission breakdown (estimate FX vs Metals split)
-  const fxVolume = Math.round(totalVolume * 0.7); // Estimate 70% FX
-  const metalVolume = Math.round(totalVolume * 0.3); // Estimate 30% Metals
-  
-  // Calculate base commission using the commission rates (FX $4.50/lot, Metals $8/lot for tier 1)
+  // Calculate commission breakdown from API data
+  // Base commission already comes from XValley via fetchVolumeHistory
+  // This is now simplified - just use the real base commission from the API
   const currentMonthData = { 
-    tier1: { fxLots: fxVolume, metalLots: metalVolume }, 
-    tier2: { fxLots: 0, metalLots: 0 }, 
-    tier3: { fxLots: 0, metalLots: 0 }, 
-    socialProfit: 0 
+    baseCommission: totalRevenue,  // This is already from XValley
+    volume: totalVolume
   };
   
-  const calcBase = (tierData, rates) => (tierData.fxLots * rates.fx) + (tierData.metalLots * rates.metals);
-  const t1Earnings = calcBase(currentMonthData.tier1, COMMISSION_RATES.tier1);
-  const t2Earnings = calcBase(currentMonthData.tier2, COMMISSION_RATES.tier2);
-  const t3Earnings = calcBase(currentMonthData.tier3, COMMISSION_RATES.tier3);
-  const socialBonus = currentMonthData.socialProfit * 0.05;
-  
-  // Use real revenue from props if available, otherwise calculate from volume
-  const totalBaseCommission = totalRevenue || (t1Earnings + t2Earnings + t3Earnings + socialBonus);
+  // Use real revenue from API (base commission from XValley)
+  const totalBaseCommission = totalRevenue;
   
   /**
    * PERFORMANCE BONUS CALCULATION (Per Tier Bonus Documentation)
@@ -2200,15 +2615,13 @@ const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-neutral-900 rounded-xl shadow-sm border border-neutral-800 p-6">
-            <h3 className="font-bold text-white mb-4 flex items-center"><Calculator size={20} className="mr-2 text-amber-500"/> Rebate Breakdown</h3>
+            <h3 className="font-bold text-white mb-4 flex items-center"><Calculator size={20} className="mr-2 text-amber-500"/> Commission Breakdown</h3>
             <div className="overflow-hidden rounded-lg border border-neutral-800">
               <table className="w-full text-left text-sm">
-                <thead className="bg-neutral-800/50 text-neutral-400 font-semibold border-b border-neutral-800"><tr><th className="p-3">Source</th><th className="p-3 text-right">Volume</th><th className="p-3 text-right">Earnings</th></tr></thead>
+                <thead className="bg-neutral-800/50 text-neutral-400 font-semibold border-b border-neutral-800"><tr><th className="p-3">Source</th><th className="p-3 text-right">Amount</th></tr></thead>
                 <tbody className="divide-y divide-neutral-800">
-                  <tr><td className="p-3 font-medium text-neutral-200">Tier 1 (Direct)</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier1.fxLots} FX / {currentMonthData.tier1.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t1Earnings.toFixed(2)}</td></tr>
-                  <tr><td className="p-3 font-medium text-neutral-200">Tier 2</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier2.fxLots} FX / {currentMonthData.tier2.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t2Earnings.toFixed(2)}</td></tr>
-                  <tr><td className="p-3 font-medium text-neutral-200">Tier 3</td><td className="p-3 text-right text-neutral-400">{currentMonthData.tier3.fxLots} FX / {currentMonthData.tier3.metalLots} Metal</td><td className="p-3 text-right font-bold text-neutral-200">${t3Earnings.toFixed(2)}</td></tr>
-                  <tr className="bg-amber-500/5 border-t border-amber-500/10"><td className="p-3 font-medium text-amber-500">Social Bonus</td><td className="p-3 text-right text-neutral-400">${currentMonthData.socialProfit} Profit</td><td className="p-3 text-right font-bold text-amber-500">+${socialBonus.toFixed(2)}</td></tr>
+                  <tr><td className="p-3 font-medium text-neutral-200">Base Commission (from XValley)</td><td className="p-3 text-right font-bold text-neutral-200">${totalBaseCommission.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>
+                  <tr className="bg-amber-500/5 border-t border-amber-500/10"><td className="p-3 font-medium text-amber-500">Performance Bonus</td><td className="p-3 text-right font-bold text-amber-500">+${bonusAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -2249,64 +2662,297 @@ const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
   );
 };
 
-// E. NETWORK VIEW (Updated with Aggregation & Nudge)
-const NetworkView = ({ userRole, ibQualificationThreshold }) => {
+// E. NETWORK VIEW - 3-Tier Referral Hierarchy with Nudge System
+const NetworkView = ({ clients, userRole, ibQualificationThreshold }) => {
   const [expandedNodes, setExpandedNodes] = useState({});
   const [selectedPartner, setSelectedPartner] = useState(null);
-  const [networkPartners, setNetworkPartners] = useState([]);  // Will be fetched from API
+  const [selectedPartnerTier, setSelectedPartnerTier] = useState(0);  // Track which tier they are
+  const [networkPartners, setNetworkPartners] = useState([]);  // Direct referrals (Tier 1)
   const [isLoading, setIsLoading] = useState(false);
 
+  // Populate network from clients data on load
+  useEffect(() => {
+      if (clients && clients.length > 0) {
+      //console.log(`[NetworkView] Populating network from ${clients.length} clients`);
+      const rawHasReferralFields = clients.some(c => c._raw && (c._raw.Referrer || c._raw.ReferrerId || c._raw.ReferralCode));
+
+      let partners = [];
+
+      if (rawHasReferralFields) {
+        // Create node map for quick lookup
+        const idMap = {};
+        const usernameMap = {};
+        const codeMap = {};
+
+        const nodes = clients.map(client => {
+          const node = {
+            id: client.id,
+            username: client.username,
+            name: client.name || client.username,
+            email: client.email,
+            phone: client.phone,
+            type: 'Direct Partner',
+            country: client.country,
+            status: client.status,
+            kycStatus: client.kycStatus,
+            deposit: Math.round(client.deposit * 100) / 100,
+            // Volume: actual lots traded (2 decimals)
+            volume: Math.round((client.lots || 0) * 100) / 100,
+            // Revenue: actual commission earned by this client (2 decimals)
+            revenue: Math.round((client.baseCommission || 0) * 100) / 100,
+            totalClients: client.totalClients || 1,
+            accountCount: client.realAccountCount || 0,  // Only count real accounts
+            subPartners: [],
+            _raw: client._raw || client
+          };
+          idMap[node.id] = node;
+          if (node.username) usernameMap[node.username.toLowerCase()] = node;
+          const code = (node._raw && (node._raw.ReferralCode || node._raw.Referral)) || null;
+          if (code) codeMap[String(code)] = node;
+          return node;
+        });
+
+        let matchedCount = 0;
+        const referrerSample = [];
+        nodes.forEach(n => {
+          const raw = n._raw || {};
+          const ref = raw.Referrer || raw.ReferrerId || raw.ReferrerUsername || raw.ReferralCode || raw.Referral;
+          
+          if (referrerSample.length < 5) {
+            referrerSample.push({ username: n.username, referrer: ref, nodeId: n.id });
+          }
+          
+          if (!ref) return;
+
+          let parent = null;
+          // Try numeric id match
+          const idCandidate = parseInt(ref, 10);
+          if (!isNaN(idCandidate) && idMap[idCandidate]) parent = idMap[idCandidate];
+          // Try username match
+          if (!parent && typeof ref === 'string') parent = usernameMap[ref.toLowerCase()];
+          // Try referral code match
+          if (!parent && codeMap[String(ref)]) parent = codeMap[String(ref)];
+
+          if (parent) {
+            parent.subPartners.push(n);
+            n._parentId = parent.id;
+            matchedCount++;
+          }
+        });
+     //   console.log(`[NetworkView] Sample referrer values:`, referrerSample);
+       // console.log(`[NetworkView] Matched ${matchedCount} referral relationships from ${nodes.length} nodes`);
+
+        // Session partner id (your IB) - show only direct referrals
+        const sessionPid = getSessionPartnerId();
+      //  console.log(`[NetworkView] Session PartnerId: ${sessionPid}, building network tree`);
+
+        // Get all tier 1 nodes (direct referrals where referrer === sessionPid)
+        const tier1Nodes = nodes.filter(n => {
+          const raw = n._raw || {};
+          const ref = raw.Referrer || raw.ReferrerId || raw.ReferrerUsername || raw.ReferralCode || raw.Referral;
+          const numRef = parseInt(ref, 10);
+          return !isNaN(numRef) && numRef === sessionPid;
+        });
+        
+      //  console.log(`[NetworkView] Found ${tier1Nodes.length} tier 1 (direct) referrals`);
+        
+        // Count tier 2 and tier 3
+        let tier2Count = 0;
+        let tier3Count = 0;
+        tier1Nodes.forEach(t1 => {
+          tier2Count += t1.subPartners.length;
+          t1.subPartners.forEach(t2 => {
+            tier3Count += t2.subPartners.length;
+          });
+        });
+        
+       // console.log(`[NetworkView] Tree structure: ${tier1Nodes.length} tier 1, ${tier2Count} tier 2, ${tier3Count} tier 3`);
+
+        // Show tier 1 nodes directly (no root wrapper)
+        partners = tier1Nodes;
+        
+        setNetworkPartners(partners);
+        // Auto-expand tier 1 to show tier 2
+        const expanded = {};
+        tier1Nodes.forEach(n => { expanded[n.id] = true }); // Tier 1 expanded to show tier 2
+        setExpandedNodes(expanded);
+     //   console.log(`[NetworkView] Network populated with ${tier1Nodes.length} tier 1 partners (tier 2/3 visible on expand)`);
+      } else {
+        // Fallback: show first 10 clients as direct partners
+        partners = clients.slice(0, 10).map(client => ({
+          id: client.id,
+          username: client.username,
+          name: client.name || client.username,
+          email: client.email,
+          phone: client.phone,
+          type: 'Direct Partner',
+          country: client.country,
+          status: client.status,
+          kycStatus: client.kycStatus,
+          deposit: Math.round(client.deposit * 100) / 100,
+          // Volume: actual lots traded (2 decimals)
+          volume: Math.round((client.lots || 0) * 100) / 100,
+          // Revenue: actual commission earned (2 decimals)
+          revenue: Math.round((client.baseCommission || 0) * 100) / 100,
+          totalClients: 1,
+          accountCount: client.realAccountCount || 0,  // Only count real accounts
+          subPartners: []
+        }));
+        setNetworkPartners(partners);
+        const expanded = partners.reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
+        setExpandedNodes(expanded);
+      //  console.log(`[NetworkView] Network populated with ${partners.length} direct partners (auto-expanded fallback)`);
+      }
+    }
+  }, [clients]);
+
   const toggleNode = (id) => setExpandedNodes(p => ({...p, [id]: !p[id]}));
-  const handleNudge = (e, type, count) => {
+
+  // Nudge handler - sends email via backend and records in Supabase
+  const handleNudge = async (e, partnerId, partnerName, partnerEmail, nudgeType, tier) => {
     e.stopPropagation();
-    alert(`System: Automatically sent '${type}' reminder emails to ${count} pending clients.`);
+   // console.log(`[Nudge] ${nudgeType} nudge triggered for ${partnerName} (${partnerEmail}) - Tier ${tier}`);
+    
+    try {
+      // Get current partner ID and username from WebSocket session
+      const currentPartnerId = getSessionPartnerId();
+      const currentUsername = getSessionUsername() || 'IB Manager';
+      const referrerName = currentUsername;  // Use actual username from session
+      
+    //  console.log(`[Nudge] Referrer: ${referrerName}, PartnerId: ${currentPartnerId}`);
+      
+      // Call backend to send email and record nudge
+      const result = await sendNudgeEmail(
+        partnerEmail,
+        partnerName,
+        referrerName,
+        nudgeType,
+        tier,
+        currentPartnerId || partnerId
+      );
+      
+      if (result.success) {
+        alert(`✅ ${nudgeType} nudge sent successfully!\n\nEmail: ${partnerEmail}\nMessage ID: ${result.messageId}`);
+     //   console.log('[Nudge] Success:', result);
+      } else {
+        alert(`⚠️ Failed to send nudge\n\nError: ${result.error}\n\nMake sure:\n1. Backend server is running on port 5000\n2. Gmail credentials are in backend/.env`);
+     //   console.error('[Nudge] Error:', result.error);
+      }
+    } catch (error) {
+      alert(`⚠️ Error sending nudge\n\n${error.message}\n\nBackend server might not be running.`);
+     //   console.error('[Nudge] Exception:', error);
+    }
   };
 
   // Calculate total network volume from real data
   const totalNetworkVolume = networkPartners.reduce((sum, p) => sum + (p.volume || 0), 0);
 
-  const NetworkRow = ({ node, level = 0 }) => {
+  // NetworkRow handles all 3 tiers with proper visibility
+  const NetworkRow = ({ node, level = 0, parentIsDirect = true }) => {
     const isExpanded = expandedNodes[node.id];
+    const isDirect = level === 0;  // Tier 1 = Direct
+    const tier = level + 1;
     
-    // Filter logic: Separate Qualified vs Unqualified
-    const qualified = node.subPartners ? node.subPartners.filter(p => p.totalClients >= ibQualificationThreshold) : [];
-    const unqualified = node.subPartners ? node.subPartners.filter(p => p.totalClients < ibQualificationThreshold) : [];
+    // Only show contact details for DIRECT referrals (Tier 1)
+    const showContactDetails = isDirect;
     
-    // Aggregation logic for small referrers
-    const aggregated = unqualified.reduce((acc, curr) => ({ clients: acc.clients + curr.totalClients, volume: acc.volume + curr.volume, revenue: acc.revenue + curr.revenue }), { clients: 0, volume: 0, revenue: 0 });
+    // Separate sub-partners by qualification
+    const subPartners = node.subPartners || [];
+    const qualified = subPartners.filter(p => p.totalClients >= ibQualificationThreshold);
+    const unqualified = subPartners.filter(p => p.totalClients < ibQualificationThreshold);
+    
+    // Aggregate unqualified referrers (for retailers)
+    const aggregated = unqualified.reduce((acc, curr) => ({ 
+      clients: acc.clients + curr.totalClients, 
+      volume: acc.volume + curr.volume, 
+      revenue: acc.revenue + curr.revenue 
+    }), { clients: 0, volume: 0, revenue: 0 });
+    
     const hasChildren = qualified.length > 0 || unqualified.length > 0;
     
-    // Nudge Logic Demo
-    const pendingKYC = node.id % 3 === 0 ? 4 : 0; 
-    const pendingDeposit = node.id % 2 === 0 ? 2 : 0;
+    // Nudge counts (demo - in production would come from API)
+    const pendingKYC = node.kycStatus === 'Pending' ? 1 : 0;
+    const pendingDeposit = node.deposit === 0 ? 1 : 0;
 
     return (
         <>
-        <div className={`flex items-center p-4 border-b border-neutral-800 hover:bg-neutral-800/30 transition-colors ${level>0?'bg-neutral-900/50':''}`} style={{paddingLeft: `${level*24 + 16}px`}}>
-            <button onClick={()=>hasChildren && toggleNode(node.id)} className={`mr-3 p-1 rounded hover:bg-neutral-700 text-neutral-400 ${!hasChildren && 'invisible'}`}>{isExpanded ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</button>
-            <div className="flex-1 min-w-[200px] cursor-pointer" onClick={() => setSelectedPartner(node)}>
-                <div className="flex items-center"><span className="text-white font-bold mr-2">{node.name}</span><span className="text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 text-emerald-400 bg-emerald-500/10">{node.status}</span></div>
-                <div className="text-xs text-neutral-500 flex items-center mt-1"><span className="mr-2">{node.type}</span><span className="flex items-center"><Map size={10} className="mr-1"/>{node.country}</span></div>
-            </div>
-            
-            {/* Blind Nudge Buttons */}
-            <div className="hidden lg:flex gap-2 mr-8">
-             {pendingKYC > 0 && <button onClick={(e) => handleNudge(e, 'Complete KYC', pendingKYC)} className="flex items-center px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded text-[10px] text-neutral-300 transition-colors"><FileText size={10} className="mr-1 text-amber-500"/> Nudge KYC ({pendingKYC})</button>}
-             {pendingDeposit > 0 && <button onClick={(e) => handleNudge(e, 'Fund Account', pendingDeposit)} className="flex items-center px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded text-[10px] text-neutral-300 transition-colors"><Wallet size={10} className="mr-1 text-emerald-500"/> Nudge Deposit ({pendingDeposit})</button>}
+        <div className={`flex items-center p-4 border-b border-neutral-800 hover:bg-neutral-800/30 transition-colors group ${level > 0 ? 'bg-neutral-900/30' : ''}`} 
+             style={{paddingLeft: `${level * 24 + 16}px`}}>
+            {/* Expand/Collapse */}
+            <button 
+              onClick={() => hasChildren && toggleNode(node.id)} 
+              className={`mr-3 p-1 rounded hover:bg-neutral-700 text-neutral-400 ${!hasChildren && 'invisible'}`}
+            >
+              {isExpanded ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
+            </button>
+
+            {/* Partner Info */}
+            <div className="flex-1 min-w-[180px] cursor-pointer" onClick={() => { setSelectedPartner(node); setSelectedPartnerTier(tier); }}>
+              <div className="flex items-center gap-2">
+                <span className="text-white font-bold">{node.name}</span>
+                {/* TIER BADGE - PROMINENT */}
+                <span className={`text-[11px] font-bold px-3 py-1 rounded-full border-2 ${
+                  tier === 1 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500' :
+                  tier === 2 ? 'bg-blue-500/20 text-blue-300 border-blue-500' :
+                  'bg-purple-500/20 text-purple-300 border-purple-500'
+                }`}>
+                  TIER {tier}
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded border ${node.kycStatus === 'Approved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                  {node.kycStatus}
+                </span>
+              </div>
+              <div className="text-xs text-neutral-500 flex items-center mt-1">
+                <span className="mr-2">{node.type}</span>
+                <span className="flex items-center"><Map size={10} className="mr-1"/>{node.country}</span>
+                {tier > 1 && <span className="ml-2 text-[10px] text-neutral-600 italic">(Limited visibility)</span>}
+              </div>
             </div>
 
-            <div className="hidden md:flex space-x-8 text-right"><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Clients</div><div className="text-white font-medium">{node.totalClients}</div></div><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Volume</div><div className="text-white font-medium">{node.volume}</div></div><div className="w-24"><div className="text-xs text-neutral-500 uppercase">Revenue</div><div className="text-amber-500 font-bold">${node.revenue}</div></div></div>
+            {/* Nudge Buttons - Show for all tiers but without revealing non-direct contact */}
+            <div className="hidden lg:flex gap-2 mr-6">
+              {pendingKYC > 0 && (
+                <button 
+                  onClick={(e) => handleNudge(e, node.id, node.name, node.email, 'Complete KYC', tier)}
+                  className="flex items-center px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded text-[10px] text-amber-400 transition-colors"
+                  title={!showContactDetails ? "System will send reminder without revealing your contact" : ""}
+                >
+                  <FileText size={10} className="mr-1"/> Nudge KYC
+                </button>
+              )}
+              {pendingDeposit > 0 && (
+                <button 
+                  onClick={(e) => handleNudge(e, node.id, node.name, node.email, 'Fund Account', tier)}
+                  className="flex items-center px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded text-[10px] text-emerald-400 transition-colors"
+                  title={!showContactDetails ? "System will send reminder without revealing your contact" : ""}
+                >
+                  <Wallet size={10} className="mr-1"/> Nudge Deposit
+                </button>
+              )}
+            </div>
+
+            {/* Stats */}
+            <div className="hidden md:flex space-x-8 text-right">
+              <div className="w-24">
+                <div className="text-xs text-neutral-500 uppercase">Deposit</div>
+                <div className="text-emerald-400 font-medium">${parseFloat(node.deposit || 0).toFixed(2)}</div>
+              </div>
+              <div className="w-24">
+                <div className="text-xs text-neutral-500 uppercase">Volume</div>
+                <div className="text-white font-medium">{parseFloat(node.volume || 0).toFixed(2)}</div>
+              </div>
+              <div className="w-24">
+                <div className="text-xs text-neutral-500 uppercase">Revenue</div>
+                <div className="text-amber-500 font-bold">${parseFloat(node.revenue || 0).toFixed(2)}</div>
+              </div>
+            </div>
         </div>
-        {isExpanded && (
+
+        {/* Expanded Children - Only show up to 3 tiers total */}
+        {isExpanded && level < 2 && (
             <div className="border-l-2 border-neutral-800 ml-6">
-                {qualified.map(child => <NetworkRow key={child.id} node={child} level={level+1} />)}
-                {unqualified.length > 0 && (
-                    <div className="flex items-center p-4 border-b border-neutral-800 bg-neutral-950/30 transition-colors" style={{paddingLeft: `${(level+1)*24 + 16}px`}}>
-                        <div className="mr-3 w-4"></div>
-                        <div className="flex-1"><div className="flex items-center"><span className="text-neutral-400 italic font-bold mr-2">Retail Referrers (Aggregated)</span><span className="text-[10px] bg-neutral-800 text-neutral-500 px-2 py-0.5 rounded border border-neutral-700">{unqualified.length} Users</span></div><div className="text-xs text-neutral-600 mt-1">Partners with &lt; {ibQualificationThreshold} clients</div></div>
-                        <div className="hidden md:flex space-x-8 text-right opacity-60"><div className="w-24 font-medium text-white">{aggregated.clients}</div><div className="w-24 font-medium text-white">{aggregated.volume}</div><div className="w-24 font-bold text-white">${aggregated.revenue}</div></div>
-                    </div>
-                )}
+                {qualified.map(child => <NetworkRow key={child.id} node={child} level={level+1} parentIsDirect={false} />)}
+                {unqualified.map(child => <NetworkRow key={child.id} node={child} level={level+1} parentIsDirect={false} />)}
             </div>
         )}
         </>
@@ -2317,30 +2963,164 @@ const NetworkView = ({ userRole, ibQualificationThreshold }) => {
     <div className="space-y-6 animate-fadeIn relative">
         {selectedPartner && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6">
+          <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-lg shadow-2xl relative p-6">
              <button onClick={() => setSelectedPartner(null)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
-             <div className="flex items-center mb-6"><div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-amber-500 font-bold text-lg mr-4">{selectedPartner.name.substring(0,2).toUpperCase()}</div><div><h3 className="text-xl font-bold text-white">{selectedPartner.name}</h3><p className="text-sm text-emerald-400">{selectedPartner.type}</p></div></div>
-             <div className="space-y-4 mb-6"><div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800"><p className="text-xs text-neutral-500 uppercase font-bold mb-2">Contact Info</p><div className="space-y-2 text-sm text-neutral-300"><div className="flex justify-between"><span>Email:</span> <span className="text-white">partner.{selectedPartner.id}@nommia.net</span></div><div className="flex justify-between"><span>Phone:</span> <span className="text-white">+44 7700 900{selectedPartner.id}</span></div></div></div></div>
-             <button className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg transition-colors flex items-center justify-center"><Bell size={18} className="mr-2"/> Contact Partner</button>
+             
+             <div className="flex items-center mb-6">
+               <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-amber-500 font-bold text-lg mr-4">
+                 {selectedPartner.name.substring(0,2).toUpperCase()}
+               </div>
+               <div className="flex-1">
+                 <h3 className="text-xl font-bold text-white">{selectedPartner.name}</h3>
+                 <p className="text-sm text-neutral-400 mb-2">{selectedPartner.type}</p>
+                 {/* TIER BADGE - PROMINENT IN MODAL */}
+                 <div className="flex gap-2 items-center">
+                   <span className={`text-xs font-bold px-3 py-1 rounded-full border-2 ${
+                     selectedPartnerTier === 1 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500' :
+                     selectedPartnerTier === 2 ? 'bg-blue-500/20 text-blue-300 border-blue-500' :
+                     'bg-purple-500/20 text-purple-300 border-purple-500'
+                   }`}>
+                     TIER {selectedPartnerTier} REFERRAL
+                   </span>
+                   <span className={`text-xs px-2 py-1 rounded border ${selectedPartner.kycStatus === 'Approved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                     {selectedPartner.kycStatus}
+                   </span>
+                 </div>
+               </div>
+             </div>
+
+             {/* Only show contact details for direct referrals (Tier 1) */}
+             {selectedPartnerTier === 1 ? (
+               <div className="space-y-4 mb-6">
+                 <div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800">
+                   <p className="text-xs text-neutral-500 uppercase font-bold mb-3">Contact Information</p>
+                   <div className="space-y-2 text-sm text-neutral-300">
+                     <div className="flex justify-between items-center">
+                       <span>Name:</span> 
+                       <span className="text-white font-medium">{selectedPartner.name}</span>
+                     </div>
+                     <div className="flex justify-between items-center">
+                       <span>Email:</span> 
+                       <span className="text-white font-medium">{selectedPartner.email || `partner.${selectedPartner.id}@nommia.net`}</span>
+                     </div>
+                     <div className="flex justify-between">
+                       <span>Phone:</span> 
+                       <span className="text-white font-medium">{selectedPartner.phone || '+44 7700 900000'}</span>
+                     </div>
+                   </div>
+                 </div>
+                 <button className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg transition-colors flex items-center justify-center">
+                   <Bell size={18} className="mr-2"/> Contact This Partner
+                 </button>
+               </div>
+             ) : (
+               <div className="space-y-4 mb-6">
+                 <div className="p-4 bg-neutral-950 rounded-lg border border-amber-500/20">
+                   <p className="text-xs text-amber-500 uppercase font-bold mb-2 flex items-center">
+                     <Lock size={12} className="mr-1"/> Privacy Notice
+                   </p>
+                   <p className="text-sm text-neutral-300">
+                     For security, contact details are only available for your direct referrals. 
+                     To communicate with {selectedPartner.name}, use the Nudge system below which sends system-generated emails from Nommia.
+                   </p>
+                 </div>
+               </div>
+             )}
+
+             {/* Nudge System */}
+             <div className="p-4 bg-neutral-950 rounded-lg border border-neutral-800">
+               <p className="text-xs text-neutral-500 uppercase font-bold mb-3">Send Reminder (Nommia System)</p>
+               <div className="flex gap-2">
+                 {selectedPartner.kycStatus === 'Pending' && (
+                   <button 
+                     onClick={() => handleNudge(new Event('click'), selectedPartner.id, selectedPartner.name, selectedPartner.email || `partner.${selectedPartner.id}@nommia.net`, 'Complete KYC', selectedPartnerTier)}
+                     className="flex-1 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-sm font-medium transition-colors flex items-center justify-center"
+                   >
+                     <FileText size={14} className="mr-1"/> Nudge KYC
+                   </button>
+                 )}
+                 {selectedPartner.deposit === 0 && (
+                   <button 
+                     onClick={() => handleNudge(new Event('click'), selectedPartner.id, selectedPartner.name, selectedPartner.email || `partner.${selectedPartner.id}@nommia.net`, 'Fund Account', selectedPartnerTier)}
+                     className="flex-1 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-sm font-medium transition-colors flex items-center justify-center"
+                   >
+                     <Wallet size={14} className="mr-1"/> Nudge Deposit
+                   </button>
+                 )}
+               </div>
+               <p className="text-[10px] text-neutral-600 mt-2">
+                 {selectedPartnerTier > 1 
+                   ? `Reminder will be sent as a system notification from Nommia without revealing your contact information.`
+                   : `Reminder will be sent to their registered email as a direct message from Nommia.`
+                 }
+               </p>
+             </div>
           </div>
         </div>
         )}
-        <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-xl flex justify-between items-center"><div><h2 className="text-xl font-bold text-white flex items-center"><Network size={20} className="mr-2 text-amber-500"/> Partner Network</h2><p className="text-sm text-neutral-400 mt-1">Monitor performance across your sub-IB hierarchy.</p></div><div className="text-right hidden sm:block"><div className="text-xs text-neutral-500 uppercase font-bold">Total Network Volume</div><div className="text-2xl font-bold text-white">{totalNetworkVolume.toFixed(1)} <span className="text-sm text-neutral-500 font-normal">Lots</span></div></div></div>
+
+        {/* Header */}
+        <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-xl flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-bold text-white flex items-center">
+              <Network size={20} className="mr-2 text-amber-500"/> 
+              Partner Network
+            </h2>
+            <p className="text-sm text-neutral-400 mt-1">Your direct referrals (Tier 1), their referrals (Tier 2), and their referrals (Tier 3). Contact details only visible for Tier 1.</p>
+          </div>
+          <div className="text-right hidden sm:block">
+            <div className="text-xs text-neutral-500 uppercase font-bold">Total Network Volume</div>
+            <div className="text-2xl font-bold text-white">
+              {totalNetworkVolume.toFixed(1)} <span className="text-sm text-neutral-500 font-normal">NV</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Network Tree */}
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
-            <div className="p-4 border-b border-neutral-800 bg-neutral-950/50 flex justify-between items-center text-xs font-bold text-neutral-500 uppercase tracking-wider"><div className="pl-12">Partner Name</div><div className="hidden md:flex space-x-8 pr-4"><div className="w-24 text-right">Clients</div><div className="w-24 text-right">Volume</div><div className="w-24 text-right">Revenue</div></div></div>
+            <div className="p-4 border-b border-neutral-800 bg-neutral-950/50 flex justify-between items-center text-xs font-bold text-neutral-500 uppercase tracking-wider">
+              <div className="pl-12">Partner Name</div>
+              <div className="hidden md:flex space-x-8 pr-4">
+                <div className="w-24 text-right">Deposit</div>
+                <div className="w-24 text-right">Volume</div>
+                <div className="w-24 text-right">Revenue</div>
+              </div>
+            </div>
             <div>
               {isLoading ? (
-                <div className="p-8 text-center text-neutral-500">Loading network data...</div>
+                <div className="p-8 text-center text-neutral-500 flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-500"></div>
+                  Loading network data...
+                </div>
               ) : networkPartners.length === 0 ? (
                 <div className="p-8 text-center text-neutral-500">
                   <Network size={40} className="mx-auto mb-4 opacity-50" />
                   <p className="text-lg font-medium mb-2">No Partners Yet</p>
-                  <p className="text-sm">Your sub-IB network will appear here once you have partners.</p>
+                  <p className="text-sm">Your direct referrals will appear here. Build your network to see the 3-tier hierarchy.</p>
                 </div>
               ) : (
-                networkPartners.map(node => <NetworkRow key={node.id} node={node} />)
+                (() => {
+                  const hasReferralData = networkPartners.some(p => Array.isArray(p.subPartners) && p.subPartners.length > 0);
+                  return (
+                    <>
+                      
+                      {networkPartners.map(node => <NetworkRow key={node.id} node={node} level={0} />)}
+                    </>
+                  );
+                })()
               )}
             </div>
+        </div>
+
+        {/* Legend */}
+        <div className="p-4 bg-neutral-900/50 border border-neutral-800 rounded-xl text-xs text-neutral-400">
+          <p className="font-bold text-white mb-2">How the Network Works</p>
+          <ul className="space-y-1">
+            <li>• <strong>Tier 1 (Direct):</strong> Your direct referrals — full contact details visible</li>
+            <li>• <strong>Tier 2 & 3:</strong> Your referrals' referrals — name, KYC, deposit, and volume only</li>
+            <li>• <strong>Nudges:</strong> Send system-generated reminders from Nommia without revealing your contact info</li>
+            <li>• <strong>Privacy:</strong> Non-direct partners never see your details, only system notifications</li>
+          </ul>
         </div>
     </div>
   );
@@ -2400,7 +3180,7 @@ const SettingsView = () => {
   };
 
   // 4. Verify & Execute Action (Fixed Function Name)
-  const handleFinalVerification = () => {
+  const handleFinalVerification = async () => {
       if (otpInput.length < 6) return alert("Please enter a valid 6-digit OTP.");
 
       if (verificationType === 'password') {
@@ -2409,8 +3189,13 @@ const SettingsView = () => {
           if (newPassword.length < 8) return alert("Password must be at least 8 characters.");
           alert("Success: Password updated successfully.");
       } else {
-          // General Settings Save Logic
-          alert("Success: Account details and payout methods saved securely.");
+          // Save Payout Details
+          try {
+              await savePayoutDetails(payment);
+              alert("Success: Account details and payout methods saved securely.");
+          } catch (error) {
+              alert("Error saving payout details: " + error.message);
+          }
       }
 
       // Reset & Close
@@ -2951,7 +3736,7 @@ export default function App() {
 
   const initAPI = async (token) => {
     try {
-      console.log("=== Initializing XValley Connection ===");
+    //  console.log("=== Initializing XValley Connection ===");
       setApiStatus('connecting');
       setIsLoadingClients(true);
       
@@ -2960,20 +3745,20 @@ export default function App() {
       
       // Step 2: Connect WebSocket and authenticate
       await connectWebSocket(token);
-      console.log("✅ WebSocket Connected");
+    //  console.log("✅ WebSocket Connected");
       
       // Step 3: Fetch complete client data (clients + trading accounts + trades)
-      console.log("Fetching complete client data...");
+    //  console.log("Fetching complete client data...");
       const clientData = await fetchCompleteClientData();
-      console.log(`✅ Loaded ${clientData.length} clients with full data`);
+    //  console.log(`✅ Loaded ${clientData.length} clients with full data`);
       
       setClients(clientData);
       setClientUsernames(clientData.map(c => c.username).filter(Boolean));      
       
       // Step 4: Fetch network stats for dashboard
-      console.log("Fetching network statistics...");
+    //  console.log("Fetching network statistics...");
       const stats = await fetchNetworkStats();
-      console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
+    //  console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
       
       setTotalVolume(stats.totalVolume);
       setRevenue(stats.totalRevenue);
@@ -2986,10 +3771,10 @@ export default function App() {
       
       setApiStatus('connected');
       setIsLoadingClients(false);
-      console.log("=== API Initialization Complete ===");
+    //  console.log("=== API Initialization Complete ===");
       
     } catch (error) {
-      console.error("API Connection Failed:", error);
+    //  console.error("API Connection Failed:", error);
       setApiStatus('error');
       setIsLoadingClients(false);
     }
@@ -3003,9 +3788,9 @@ export default function App() {
     switch (activeTab) {
       case 'dashboard': return <DashboardView clients={clients} apiStatus={apiStatus} onNavigate={setActiveTab} clientUsernames={clientUsernames} setTotalVolume={setTotalVolume} setRevenue={setRevenue} setTotalPL={setTotalPL} setTradeHistory={setTradeHistory} totalVolume={totalVolume} revenue={revenue} tradeHistory={tradeHistory} />;
       case 'clients': return <ClientsView clients={clients} />;
-      case 'marketing': return <MarketingView userRole={userRole} />;
+      case 'marketing': return <MarketingView userRole={userRole} clients={clients} apiStatus={apiStatus} />;
       // Pass the threshold to NetworkView
-      case 'network': return <NetworkView userRole={userRole} ibQualificationThreshold={ibQualificationThreshold} />;
+      case 'network': return <NetworkView clients={clients} userRole={userRole} ibQualificationThreshold={ibQualificationThreshold} />;
       case 'payouts': return <PayoutsView clients={clients} totalVolume={totalVolume} revenue={revenue} />;
       case 'reports': return <ReportsView clients={clients} totalVolume={totalVolume} revenue={revenue} apiStatus={apiStatus} />;
       case 'settings': return <SettingsView />;
