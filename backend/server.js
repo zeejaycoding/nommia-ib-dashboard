@@ -413,8 +413,8 @@ app.use((req, res) => {
   });
 });
 
+const port = process.env.PORT || 5000; 
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
+app.listen(port, '0.0.0.0', () => {
+  console.log(`[Server] Running on http://0.0.0.0:${port} (env: ${process.env.NODE_ENV || 'development'})`);
 });

@@ -2011,7 +2011,7 @@ const getAssetsLocal = () => {
  */
 export const sendNudgeEmail = async (recipientEmail, recipientName, referrerName, nudgeType, tier, partnerId) => {
   try {
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+    const backendUrl = 'https://nommia-ib-backend.onrender.com';
     
     console.log(`[Nudge] Sending ${nudgeType} email to ${recipientEmail}...`);
     console.log(`[Nudge] Recipient: ${recipientName}, Referrer: ${referrerName}, Tier: ${tier}`);
