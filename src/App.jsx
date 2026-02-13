@@ -3220,15 +3220,23 @@ const SettingsView = () => {
   // 3. Send OTP
   const handleRequestOTP = async () => {
       try {
+          // Validate email first
+          if (!profile.email || profile.email.trim() === '') {
+              alert('❌ Error: No email address found. Please log in again.');
+              return;
+          }
+
+          console.log('[Security] Requesting OTP for email:', profile.email);
           const data = await sendOtp(profile.email, 'security');
+          
           if (data.success) {
-              alert(`Security Code sent to ${profile.email}`);
+              alert(`✅ Security Code sent to ${profile.email}`);
               setOtpStep('verify');
           } else {
-              alert('Error: ' + data.message);
+              alert('❌ Error: ' + (data.message || 'Failed to send OTP'));
           }
       } catch (error) {
-          alert('Failed to send OTP: ' + error.message);
+          alert('❌ Failed to send OTP: ' + error.message);
       }
   };
 
@@ -3891,6 +3899,12 @@ export default function App() {
     setIsAuthenticated(true);
     setCurrentUser(username);
     localStorage.setItem('username', username);
+    // Set profile email based on username (username@nommia.io)
+    setProfile(prev => ({
+      ...prev,
+      name: username,
+      email: username ? `${username}@nommia.io` : ''
+    }));
     initAPI(token);
   };
 

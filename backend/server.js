@@ -4,16 +4,62 @@ const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
+// ============= EARLY STARTUP LOGGING =============
+console.log('\n========================================');
+console.log('[STARTUP] Backend initializing...');
+console.log(`[STARTUP] Port: ${process.env.PORT || 5000}`);
+console.log(`[STARTUP] Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log('[STARTUP] Loading modules...');
+console.log('========================================\n');
+
 const app = express();
 
+console.log('[Init] Setting up Express middleware...');
 app.use(express.json({ limit: '50mb' }));
+
+// ============= CORS CONFIGURATION =============
+console.log('[Init] Configuring CORS...');
+const allowedOrigins = [
+  'https://nommia-ib-dashboard.onrender.com',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  process.env.CLIENT_URL || 'https://nommia-ib-dashboard.onrender.com'
+];
+console.log(`[CORS] Allowed origins: ${allowedOrigins.join(', ')}`);
+
 app.use(cors({
-  origin: [
-    process.env.CLIENT_URL || 'https://nommia-ib-dashboard.onrender.com'],
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] Blocked request from origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  maxAge: 86400
+}));
+
+// Handle OPTIONS requests explicitly
+app.options('*', cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 // ============= SUPABASE CLIENT =============
+console.log('[Init] Initializing Supabase client...');
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
@@ -28,6 +74,7 @@ if (supabaseUrl && supabaseKey) {
 let emailTransporter = null;
 
 // Brevo SMTP Configuration (from .env)
+console.log('[Init] Loading Brevo SMTP configuration...');
 const SMTP_CONFIG = {
   host: process.env.SMTP_HOST ,
   port: process.env.SMTP_PORT,
@@ -41,17 +88,21 @@ const initializeEmail = () => {
   if (emailTransporter) return emailTransporter;
     
   try {
+    console.log('[Email] Initializing Brevo SMTP transporter...');
     emailTransporter = nodemailer.createTransport({
       host: SMTP_CONFIG.host,
-      port: SMTP_CONFIG.port,
-      secure: true,
+      port: SMTP_CONFIG.port || 587,
+      secure: false, // Must be false for port 587 (TLS)
       auth: {
         user: SMTP_CONFIG.user,
         pass: SMTP_CONFIG.password
+      },
+      tls: {
+        rejectUnauthorized: false
       }
     });
     
-    console.log(`[Email] ✅ Nodemailer configured with Brevo SMTP (${SMTP_CONFIG.host}:${SMTP_CONFIG.port})`);
+    console.log(`[Email] ✅ Nodemailer configured with Brevo SMTP (${SMTP_CONFIG.host}:${SMTP_CONFIG.port || 587} - TLS)`);
     return emailTransporter;
   } catch (err) {
     console.error('[Email] ❌ Failed to create transporter:', err.message);
@@ -60,19 +111,67 @@ const initializeEmail = () => {
 };
 
 // Initialize on startup
+console.log('[Init] Starting email transporter initialization...');
 const transporter = initializeEmail();
 
-// Test email connection
+// Test email connection (non-blocking with timeout)
+let emailVerified = false;
 if (transporter) {
+  console.log('[Email] Testing Brevo SMTP connection (with 10s timeout)...');
+  
+  // Set a timeout for verification - don't block server startup
+  const verifyTimeout = setTimeout(() => {
+    if (!emailVerified) {
+      console.warn('[Email] ⚠️ SMTP verification timeout (>10s) - will retry on first email send');
+    }
+  }, 10000);
+  
   transporter.verify((error, success) => {
+    clearTimeout(verifyTimeout);
+    emailVerified = true;
+    
     if (error) {
       console.error('[Email] ❌ Brevo SMTP connection failed:', error.message);
-     // console.error('[Email] Check SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD in .env');
+      console.warn('[Email] ⚠️ Email sending may fail - will attempt on first request');
+      console.warn('[Email] Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD in .env');
     } else {
-      console.log('[Email] ✅ Brevo SMTP connection verified!');
+      console.log('[Email] ✅ Brevo SMTP connection verified! Ready to send emails.');
     }
   });
+} else {
+  console.error('[Email] ❌ Transporter initialization failed - email features will not work');
 }
+
+// ============= EMAIL HELPER FUNCTIONS =============
+
+/**
+ * Send email with automatic retry logic
+ * Retries up to 3 times with exponential backoff
+ */
+const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[Email] Sending (attempt ${attempt}/${maxRetries})...`);
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`[Email] ✅ Sent successfully (Message ID: ${info.messageId})`);
+      return info;
+    } catch (error) {
+      lastError = error;
+      console.warn(`[Email] ⚠️ Attempt ${attempt} failed: ${error.message}`);
+      
+      if (attempt < maxRetries) {
+        // Exponential backoff: 1s, 2s, 4s
+        const delayMs = Math.pow(2, attempt - 1) * 1000;
+        console.log(`[Email] Retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  
+  throw lastError;
+};
 
 // ============= EMAIL TEMPLATES =============
 
@@ -382,10 +481,10 @@ app.post('/api/nudges/send', async (req, res) => {
     const template = emailTemplates[nudgeType];
     const emailBody = template.getBody(recipientName, referrerName);
 
-    console.log(`[Email] Sending ${nudgeType} to ${recipientEmail}...`);
+    console.log(`[Nudge] Sending ${nudgeType} to ${recipientEmail}...`);
 
-    // Send email via Brevo SMTP
-    const info = await transporter.sendMail({
+    // Send email via Brevo SMTP with retry logic
+    const info = await sendEmailWithRetry({
       from: `"${SMTP_CONFIG.fromName}" <${SMTP_CONFIG.from}>`,
       to: recipientEmail,
       subject: template.subject,
@@ -393,7 +492,7 @@ app.post('/api/nudges/send', async (req, res) => {
       text: emailBody
     });
 
-    console.log(`[Email] ✅ Nudge sent to ${recipientEmail} via Brevo SMTP (Message ID: ${info.messageId})`);
+    console.log(`[Nudge] ✅ Nudge sent to ${recipientEmail} via Brevo SMTP`);
 
     res.status(200).json({
       success: true,
@@ -406,7 +505,7 @@ app.post('/api/nudges/send', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('[Email] ❌ Error:', error.message);
+    console.error('[Nudge] ❌ Error:', error.message);
     res.status(500).json({
       error: 'Failed to send email',
       details: error.message
@@ -724,11 +823,28 @@ const otpStore = new Map();
  */
 app.post('/api/otp/send', async (req, res) => {
   try {
+    console.log('[OTP Send] Request received. Body:', JSON.stringify(req.body));
+    
     const { email, type } = req.body;
 
-    if (!email) {
+    console.log(`[OTP Send] Extracted email: "${email}", type: "${type}"`);
+
+    // Validate email
+    if (!email || email.trim() === '') {
+      console.warn('[OTP Send] ❌ Email is missing or empty');
       return res.status(400).json({ 
-        error: 'Missing required field: email'
+        error: 'Missing required field: email',
+        received: { email: email || 'undefined', type }
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      console.warn(`[OTP Send] ❌ Invalid email format: "${email}"`);
+      return res.status(400).json({ 
+        error: 'Invalid email format',
+        received: email
       });
     }
 
@@ -745,7 +861,7 @@ app.post('/api/otp/send', async (req, res) => {
       type: type || 'verification'
     });
 
-    console.log(`[OTP] Generated OTP for ${email}: ${otp} (expires in 10 min)`);
+    console.log(`[OTP] ✅ Generated OTP for ${email}: ${otp} (expires in 10 min)`);
 
     // Send OTP via email using nodemailer + Brevo SMTP
     try {
@@ -786,16 +902,21 @@ app.post('/api/otp/send', async (req, res) => {
         `
       };
 
-      // Send email via Brevo
+      // Send email via Brevo with retry logic
       if (transporter) {
-        await transporter.sendMail(mailOptions);
-        console.log(`[Email] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
+        try {
+          await sendEmailWithRetry(mailOptions);
+          console.log(`[OTP] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
+        } catch (sendErr) {
+          console.warn(`[OTP] ⚠️ Failed to send OTP email after 3 retries: ${sendErr.message}`);
+          // Don't fail the request if email fails - OTP was generated and stored
+        }
       } else {
-        console.warn(`[Email] ⚠️ Transporter not configured. OTP for ${email}: ${otp} (would be sent via Brevo)`);
+        console.warn(`[OTP] ⚠️ Transporter not configured. OTP for ${email}: ${otp} (would be sent via Brevo)`);
       }
     } catch (emailErr) {
-      console.error('[Email] ❌ Failed to send OTP email via Brevo:', emailErr.message);
-      // Don't fail the request if email fails - OTP was generated and stored
+      console.error('[OTP] ⚠️ Error preparing email:', emailErr.message);
+      // Don't fail the request if email preparation fails
     }
 
     res.status(200).json({
@@ -958,8 +1079,35 @@ app.use((req, res) => {
   });
 });
 
-const port = process.env.PORT || 5000; 
+const port = process.env.PORT || 5000;
+const host = '0.0.0.0';
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`[Server] Running on http://0.0.0.0:${port} (env: ${process.env.NODE_ENV || 'development'})`);
+// Start server with detailed logging
+const server = app.listen(port, host, () => {
+  console.log('\n========================================');
+  console.log(`[Server] ✅ RUNNING on http://${host}:${port}`);
+  console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('[Server] Ready to accept requests');
+  console.log('========================================\n');
+});
+
+// Handle server errors
+server.on('error', (err) => {
+  console.error('[Server] ❌ Error:', err.message);
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[Server] Port ${port} already in use`);
+  }
+  process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('[Process] ❌ Uncaught exception:', err);
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Process] ❌ Unhandled rejection at:', promise, 'reason:', reason);
+  process.exit(1);
 });

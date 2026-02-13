@@ -2337,20 +2337,56 @@ export const deletePayoutDetails = async () => {
  */
 export const sendOtp = async (email, type = 'security') => {
   try {
+    // Validate email
+    if (!email || email.trim() === '') {
+      const errorMsg = 'Email is required to send OTP';
+      console.error('[OTP] ❌', errorMsg);
+      return {
+        success: false,
+        message: errorMsg
+      };
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      const errorMsg = `Invalid email format: ${email}`;
+      console.error('[OTP] ❌', errorMsg);
+      return {
+        success: false,
+        message: errorMsg
+      };
+    }
+
+    console.log(`[OTP] Sending OTP to ${email} (type: ${type})...`);
+    
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
-        email,
+        email: email.trim(),
         type
       })
     });
+
     const data = await response.json();
-    console.log(`[OTP] Send to ${email}:`, data.success ? '✅' : '❌');
+    
+    if (!response.ok) {
+      console.error(`[OTP] ❌ Server error (${response.status}):`, data);
+      return {
+        success: false,
+        message: data.error || data.message || `Server error: ${response.status}`
+      };
+    }
+
+    console.log(`[OTP] ✅ Successfully sent to ${email}`);
     return data;
   } catch (error) {
-    console.error('[OTP] Send error:', error);
-    throw error;
+    console.error('[OTP] ❌ Send error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to send OTP'
+    };
   }
 };
 
