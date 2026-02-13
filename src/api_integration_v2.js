@@ -91,7 +91,7 @@ export const loginAndGetToken = async (username, password) => {
     if (authToken) {
       localStorage.setItem('authToken', authToken);
     }
-    console.log("Auth token obtained:", authToken ? "Yes" : "No");
+    //console.log("Auth token obtained:", authToken ? "Yes" : "No");
     return authToken;
   } catch (error) {
     console.error("Login Error:", error);
@@ -120,7 +120,7 @@ export const fetchServerConfig = async () => {
     // Update WS_URL if we got AdminServer from config (only in production)
     if (!import.meta.env.DEV && serverConfig.AdminServer) {
       API_CONFIG.WS_URL = serverConfig.AdminServer.url;
-      console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
+     // console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
     }
     return serverConfig;
   } catch (e) {
@@ -145,18 +145,18 @@ export const connectWebSocket = (token) => {
     });
 
     wsConnection.onopen = async (session) => {
-      console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
+      //console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
       wsSession = session;
       
       try {
         // PING to authenticate
         const pingMsg = JSON.stringify({ token: authToken, host: API_CONFIG.BROKER_HOST });
-        console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
+       // console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
         
         const result = await session.call(API_CONFIG.TOPICS.PING, [pingMsg]);
         const data = typeof result === 'string' ? JSON.parse(result) : result;
         
-        console.log("PING Response:", JSON.stringify(data, null, 2));
+        //console.log("PING Response:", JSON.stringify(data, null, 2));
         
         if (data.MessageType === -3) {
           console.error("Auth Error:", data.Messages);
@@ -170,28 +170,28 @@ export const connectWebSocket = (token) => {
         // Messages[3] = PartnerId as string (e.g., "36")
         // Messages[4] = CompanyId as string (e.g., "5")
         wsSessionId = data.Messages?.[0] || null;
-console.log("Session ID (username):", wsSessionId);
-        console.log("Roles:", data.Messages?.[1]);
+        //console.log("Session ID (username):", wsSessionId);
+        //console.log("Roles:", data.Messages?.[1]);
         
         // PartnerId is at Messages[3] as a string
         const partnerIdStr = data.Messages?.[3];
         if (partnerIdStr) {
           sessionPartnerId = parseInt(partnerIdStr, 10);
-          console.log("Extracted PartnerId:", sessionPartnerId);
+        //  console.log("Extracted PartnerId:", sessionPartnerId);
         }
         
         // CompanyId is at Messages[4] as a string
         const companyIdStr = data.Messages?.[4];
         if (companyIdStr) {
           sessionCompanyId = parseInt(companyIdStr, 10);
-          console.log("Extracted CompanyId:", sessionCompanyId);
+         // console.log("Extracted CompanyId:", sessionCompanyId);
         }
         
         if (!sessionPartnerId) {
-          console.warn("No PartnerId found in PING response - this IB may not have partner access");
+        //  console.warn("No PartnerId found in PING response - this IB may not have partner access");
         }
         
-        console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
+        //console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
         resolve(session);
       } catch (err) {
         console.error("PING Error:", err);
@@ -238,20 +238,20 @@ export const fetchAllLeads = async (pageSize = 5000) => {
       AdminType: 2  // 2 = Customers/Leads
     };
     
-    console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
+   // console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
     const wrapper = data?.Messages?.[0];
     const clients = wrapper?.Messages || [];
     
-    console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`);
+    //console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`);
     
     // Log sample clients with referrer data
     if (clients.length > 0) {
-      console.log("[fetchAllLeads] Sample clients with referrer info:");
+     // console.log("[fetchAllLeads] Sample clients with referrer info:");
       clients.slice(0, 5).forEach((c, idx) => {
-        console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
+        //console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
       });
     }
     
@@ -302,7 +302,7 @@ export const fetchAllLeads = async (pageSize = 5000) => {
 export const fetchIBClients = async (usernames = []) => {
   if (!wsSession) throw new Error("Not connected");
   
-  console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
+ // console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
   
   const filters = [];
   if (sessionCompanyId) {
@@ -323,7 +323,7 @@ export const fetchIBClients = async (usernames = []) => {
     AdminType: 2  // 2 = Customers 
   };
   
-  console.log("Leads request:", JSON.stringify(msg, null, 2));
+ // console.log("Leads request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -331,11 +331,11 @@ export const fetchIBClients = async (usernames = []) => {
   const clients = wrapper?.Messages || [];
   
   if (!clients.length) {
-    console.log("No clients found - Response:", JSON.stringify(data, null, 2));
+  //  console.log("No clients found - Response:", JSON.stringify(data, null, 2));
     return [];
   }
   
-  console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`);
+ // console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`);
   
   // Filter by usernames if provided
   let filteredClients = clients;
@@ -345,7 +345,7 @@ export const fetchIBClients = async (usernames = []) => {
       const username = (c.UserName || c.A || '').toLowerCase();
       return usernameSet.has(username);
     });
-    console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
+  //  console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
   }
     
   return filteredClients.map(lead => {
@@ -402,7 +402,7 @@ export const fetchIBClients = async (usernames = []) => {
 export const fetchAllClientsForNetwork = async () => {
   if (!wsSession) throw new Error("Not connected");
   
-  console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
+  //console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
   
   try {
     const msg = {
@@ -426,7 +426,7 @@ export const fetchAllClientsForNetwork = async () => {
       return [];
     }
     
-    console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
+    //console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
     
     const clientMap = {};
     
@@ -467,7 +467,7 @@ export const fetchAllClientsForNetwork = async () => {
       }
     });
     
-    console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
+    //console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
     
     const tradesMsg = {
       MessageType: 100,
@@ -487,7 +487,7 @@ export const fetchAllClientsForNetwork = async () => {
     const tradesWrapper = tradesData?.Messages?.[0];
     const trades = tradesWrapper?.Messages || [];
     
-    console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
+    //console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
     
     const tradesByUsername = {};
     trades.forEach(t => {
@@ -514,11 +514,11 @@ export const fetchAllClientsForNetwork = async () => {
     });
     
     const allClients = Object.values(clientMap);
-    console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
+   // console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
     
     
     // Debug: Log full raw trader data for first few clients to understand available fields
-    console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
+   // console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
     samples.forEach((c, idx) => {
       const raw = c._raw;
       if (raw) {
@@ -551,7 +551,7 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
   if (!wsSession) throw new Error("Not connected");
   
   const pid = partnerId || sessionPartnerId;
-  console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
+  // console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
   
   const msg = {
     MessageType: 100,
@@ -563,7 +563,7 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
     Skip: 0
   };
   
-  console.log("Traders request:", JSON.stringify(msg, null, 2));
+  // console.log("Traders request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -575,13 +575,13 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
     return [];
   }
   
-  console.log(`Found ${accounts.length} trading accounts (Total: ${wrapper?.Total || 'N/A'})`);
+  //console.log(`Found ${accounts.length} trading accounts (Total: ${wrapper?.Total || 'N/A'})`);
   
   // Filter by PartnerId client-side
   let filteredAccounts = accounts;
   if (pid) {
     filteredAccounts = accounts.filter(acc => acc.T?.PartnerId === pid);
-  console.log(`Filtered to ${filteredAccounts.length} accounts for PartnerId ${pid}`);
+   // console.log(`Filtered to ${filteredAccounts.length} accounts for PartnerId ${pid}`);
   }
   
   // Log first account to see field structure
@@ -639,8 +639,8 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       Skip: 0
     };
     
-    console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-    console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
+   // console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
+    // console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
@@ -652,12 +652,12 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       return [];
     }
     
-    console.log(`[fetchClosedTradesBulk] Found ${trades.length} closed trades total (Total: ${wrapper?.Total || 'N/A'})`);
+   // console.log(`[fetchClosedTradesBulk] Found ${trades.length} closed trades total (Total: ${wrapper?.Total || 'N/A'})`);
     
     let filteredTrades = trades;
     if (pid) {
       filteredTrades = trades.filter(t => t.TA?.T?.PartnerId === pid);
-      console.log(`[fetchClosedTradesBulk] Filtered to ${filteredTrades.length} trades for PartnerId ${pid}`);
+      // console.log(`[fetchClosedTradesBulk] Filtered to ${filteredTrades.length} trades for PartnerId ${pid}`);
     }
         
     return filteredTrades.map(t => ({
@@ -719,8 +719,8 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     Skip: 0
   };
   
-  console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-  console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
+  // console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
+  // console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
   const result = await wsSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -733,11 +733,11 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     return [];
   }
   
-  console.log(`[fetchTransactionsBulk] Found ${transactions.length} transactions (Total: ${wrapper?.Total || 'N/A'})`);
+  // console.log(`[fetchTransactionsBulk] Found ${transactions.length} transactions (Total: ${wrapper?.Total || 'N/A'})`);
   
   
   const totalAmount = transactions.reduce((sum, t) => sum + (t.AA || t.Amount || 0), 0);
-  console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
+  //console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
   
   
   const mapped = transactions.map(t => {
@@ -802,9 +802,9 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     return sum + amt;
   }, 0);
   
-  console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
-  console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
-  console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
+ // console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
+ // console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
+ // console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
   
   return mapped;
   } catch (error) {
@@ -828,12 +828,12 @@ const isRecentDate = (dateStr, days = 30) => {
 
 export const fetchCompleteClientData = async (forcePartnerId = null) => {
   const partnerId = forcePartnerId || sessionPartnerId;
-  console.log("=== Fetching Complete Client Data ===");
-  console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
+ // console.log("=== Fetching Complete Client Data ===");
+ // console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
   
   // Step 1: Get ALL trading accounts for this partner
   const tradingAccounts = await fetchTradingAccountsBulk(partnerId);
-  console.log(`Step 1: ${tradingAccounts.length} trading accounts for PartnerId ${partnerId}`);
+  //console.log(`Step 1: ${tradingAccounts.length} trading accounts for PartnerId ${partnerId}`);
   
   if (tradingAccounts.length === 0) {
    // console.warn("No trading accounts found for this partner");
@@ -937,7 +937,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     client._rawAccounts.push(acc);
   });
   
-  console.log(`Step 2: Grouped into ${Object.keys(clientsMap).length} unique clients`);
+  //console.log(`Step 2: Grouped into ${Object.keys(clientsMap).length} unique clients`);
   
   // Step 3: Try to fetch leads/customers data to get Approved, LastLogin, Status fields
   // This may return empty for some users (permission-based)
@@ -945,7 +945,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   try {
     const usernames = Object.keys(clientsMap);
     leadsData = await fetchIBClients(usernames);
-    console.log(`Step 3: Fetched ${leadsData.length} leads/customers records`);
+  //  console.log(`Step 3: Fetched ${leadsData.length} leads/customers records`);
     
     // Enrich clientsMap with leads data (Approved, LastLogin, Status)
     leadsData.forEach(lead => {
@@ -972,7 +972,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   // Step 4: Get closed trades for volume (lots) calculation
   // Revenue = Sum of XValley's Commission field (not calculated from volume × rate)
   const trades = await fetchClosedTradesBulk(partnerId);
-  console.log(`Step 4: ${trades.length} closed trades`);
+  //console.log(`Step 4: ${trades.length} closed trades`);
   
   // Build map: username -> { totalCommission, totalVolume, tradeCount }
   // Commission comes directly from XValley - includes all calculations (metals, instruments, etc)
@@ -997,7 +997,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     totalRevenue += comm;  // Base commission = sum of XValley commissions
   });
   
-  console.log(`Total Volume: ${totalVolume.toFixed(2)} lots | Base Commission: $${totalRevenue.toFixed(2)} (XValley, no calculations)`);
+ // console.log(`Total Volume: ${totalVolume.toFixed(2)} lots | Base Commission: $${totalRevenue.toFixed(2)} (XValley, no calculations)`);
   
   const enrichedClients = Object.values(clientsMap).map(client => {
     const userTrades = tradesByUser[client.username] || { commission: 0, volume: 0, count: 0 };
@@ -1161,13 +1161,13 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
   
   let trades;
   if (useEmptyDates) {
-    console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
+   // console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, '', '');
   } else {
     const fromStr = formatLocalDate(fromDate);
     const toStr = formatLocalDate(now);
-    console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
-    console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
+  //  console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
+   // console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, fromStr, toStr);
   }
   
@@ -1184,7 +1184,7 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
     totalRevenue += comm;  // Sum XValley commissions (no local calculations)
   });
   
-  console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
+  //console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
   
   return { trades, totalVolume, totalPL, totalRevenue, fromDate, toDate: now };
 };
@@ -1220,7 +1220,7 @@ export const fetch3MonthCommissionHistory = async () => {
       });
       
       history.unshift(monthRevenue); // Add to front (oldest first)
-      console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
+     // console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
     } catch (error) {
     //  console.error(`[fetch3MonthCommissionHistory] Error fetching month ${i}:`, error);
       history.unshift(0); // Add 0 if fetch fails
@@ -1259,7 +1259,7 @@ export const fetchTradingAccounts = async (username) => {
   const wrapper = data?.Messages?.[0];
   const accounts = wrapper?.Messages || [];
   
-  console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
+  // console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
   
   // Map to consistent format with id field
   return accounts.map(acc => ({
@@ -1296,7 +1296,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
     PageSize: 500
   };
   
-  console.log(`fetchClientTrades for account ${accountId}`);
+  // console.log(`fetchClientTrades for account ${accountId}`);
   const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -1304,7 +1304,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
   const wrapper = data?.Messages?.[0];
   const trades = wrapper?.Messages || [];
   
-  console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
+  // console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
   
   return trades.map(t => ({
     id: t.Ticket || t.I,
@@ -1507,7 +1507,7 @@ export const fetchAllTransactions = async (from = '', to = '') => {
     // Filter to only this IB's clients (PartnerId) since API doesn't support direct PartnerId filter
     const ibTransactions = allTransactions.filter(t => t.partnerId === sessionPartnerId);
     
-    console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
+    // console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
     
     return ibTransactions;
   } catch (error) {
@@ -1528,7 +1528,7 @@ export const saveCampaign = async (campaign) => {
   try {
     let partnerId = getSessionPartnerId();
     if (!partnerId) {
-      console.log('[Campaigns] Partner ID not available yet, waiting...');
+     // console.log('[Campaigns] Partner ID not available yet, waiting...');
       partnerId = await ensurePartnerIdAvailable();
     }
     if (!partnerId) {
@@ -1559,7 +1559,7 @@ export const saveCampaign = async (campaign) => {
       return null;
     }
 
-    console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
+    //console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
     return campaignObj.id;
   } catch (error) {
     console.error('[Campaigns] Exception saving campaign:', error);
@@ -1578,14 +1578,14 @@ export const getCampaigns = async () => {
       partnerId = await ensurePartnerIdAvailable();
     }
     
-    console.log('[Campaigns] Query started. Partner ID:', partnerId);
+   // console.log('[Campaigns] Query started. Partner ID:', partnerId);
     
     if (!partnerId) {
       console.warn('[Campaigns] No partner ID even after waiting, using localStorage fallback');
       return getCampaignsLocal();
     }
 
-    console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
+   // console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
     
     const { data, error } = await supabase
       .from('campaigns')
@@ -1593,11 +1593,11 @@ export const getCampaigns = async () => {
       .eq('partner_id', String(partnerId))
       .order('created_date', { ascending: false });
 
-    console.log('[Campaigns] Supabase response:', { data, error });
+    // console.log('[Campaigns] Supabase response:', { data, error });
     
     if (error) {
       console.error('[Campaigns] Error fetching campaigns:', error);
-      console.log('[Campaigns] Falling back to localStorage');
+      // console.log('[Campaigns] Falling back to localStorage');
       //return getCampaignsLocal();
     }
 
@@ -2330,22 +2330,17 @@ export const deletePayoutDetails = async () => {
 // ============= SECURITY API FUNCTIONS =============
 
 /**
- * Send OTP to email address - matches nudge email pattern
- * Calls backend Express server which uses Nodemailer + Brevo SMTP
- * Stores OTP record in Supabase for audit trail
- * 
- * @param {string} email - Email address to send OTP to
- * @param {string} type - Type of OTP: 'security' or 'admin'
- * @returns {Promise<object>} - { success: boolean, message?: string, code?: string }
+ * Send OTP to email address
+ * @param {string} email - Email address
+ * @param {string} type - Type of OTP (e.g., 'security', 'admin')
+ * @returns {Promise<object>} - { success: boolean, message?: string }
  */
 export const sendOtp = async (email, type = 'security') => {
   try {
-    const backendUrl = API_CONFIG.BACKEND_URL;
-    
     // Validate email
-    if (!email || typeof email !== 'string' || email.trim() === '') {
+    if (!email || email.trim() === '') {
       const errorMsg = 'Email is required to send OTP';
-      console.error('[OTP] ❌', errorMsg, 'Received:', email);
+      console.error('[OTP] ❌', errorMsg);
       return {
         success: false,
         message: errorMsg
@@ -2354,10 +2349,8 @@ export const sendOtp = async (email, type = 'security') => {
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const cleanEmail = email.trim().toLowerCase();
-    
-    if (!emailRegex.test(cleanEmail)) {
-      const errorMsg = `Invalid email format: ${cleanEmail}`;
+    if (!emailRegex.test(email)) {
+      const errorMsg = `Invalid email format: ${email}`;
       console.error('[OTP] ❌', errorMsg);
       return {
         success: false,
@@ -2365,60 +2358,29 @@ export const sendOtp = async (email, type = 'security') => {
       };
     }
 
-    console.log(`[OTP] Sending OTP to ${cleanEmail} (type: ${type})...`);
+    console.log(`[OTP] Sending OTP to ${email} (type: ${type})...`);
     
-    // Step 1: Call backend to send OTP
-    const response = await fetch(`${backendUrl}/api/otp/send`, {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: cleanEmail,
-        type: type || 'security'
+      body: JSON.stringify({ 
+        email: email.trim(),
+        type
       })
     });
 
+    const data = await response.json();
+    
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error(`[OTP] Backend error (${response.status}):`, errorData);
-      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
+      console.error(`[OTP] ❌ Server error (${response.status}):`, data);
+      return {
+        success: false,
+        message: data.error || data.message || `Server error: ${response.status}`
+      };
     }
 
-    const otpResult = await response.json();
-    console.log(`[OTP] ✅ OTP sent successfully:`, otpResult);
-
-    // Step 2: Store OTP record in Supabase (for tracking/audit)
-    const otpRecord = {
-      email: cleanEmail,
-      type: type || 'security',
-      status: 'sent',
-      sent_at: new Date().toISOString(),
-      backend_response: otpResult,
-      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes from now
-    };
-
-    try {
-      const { data, error: supabaseError } = await supabase
-        .from('otp_logs')
-        .insert([otpRecord])
-        .select();
-
-      if (supabaseError) {
-        console.warn('[OTP] Supabase insert warning:', supabaseError);
-        // Don't fail the OTP if Supabase insert fails - email was already sent
-      } else {
-        console.log('[OTP] ✅ Record stored in Supabase:', data?.[0]?.id);
-      }
-    } catch (supabaseErr) {
-      console.warn('[OTP] Could not store OTP record:', supabaseErr.message);
-      // Continue - email was already sent successfully
-    }
-
-    return {
-      success: true,
-      message: `Security code sent to ${cleanEmail}`,
-      timestamp: otpResult.timestamp
-    };
-
+    console.log(`[OTP] ✅ Successfully sent to ${email}`);
+    return data;
   } catch (error) {
     console.error('[OTP] ❌ Send error:', error);
     return {
@@ -2429,71 +2391,32 @@ export const sendOtp = async (email, type = 'security') => {
 };
 
 /**
- * Verify OTP code - improved error handling
+ * Verify OTP code
  * @param {string} email - Email address
  * @param {string} code - 6-digit OTP code
  * @returns {Promise<object>} - { success: boolean, message?: string }
  */
 export const verifyOtp = async (email, code) => {
   try {
-    const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanCode = (code || '').trim();
-
-    if (!cleanEmail || !cleanCode) {
-      console.error('[OTP] ❌ Email and code are required');
-      return {
-        success: false,
-        message: 'Email and code are required'
-      };
-    }
-
-    console.log(`[OTP] Verifying code for ${cleanEmail}...`);
-
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: cleanEmail,
-        code: cleanCode
+      body: JSON.stringify({ 
+        email,
+        code
       })
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error(`[OTP] Verify backend error (${response.status}):`, errorData);
-      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
-    }
-
     const data = await response.json();
-    console.log(`[OTP] Verify for ${cleanEmail}:`, data.success ? '✅' : '❌');
-    
-    // Store verification attempt
-    try {
-      await supabase
-        .from('otp_logs')
-        .update({
-          status: data.success ? 'verified' : 'failed',
-          verified_at: new Date().toISOString()
-        })
-        .eq('email', cleanEmail)
-        .order('sent_at', { ascending: false })
-        .limit(1);
-    } catch (err) {
-      console.warn('[OTP] Could not update verification status:', err.message);
-    }
-
+    console.log(`[OTP] Verify for ${email}:`, data.success ? '✅' : '❌');
     return data;
   } catch (error) {
     console.error('[OTP] Verify error:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to verify OTP'
-    };
+    throw error;
   }
 };
 
 /**
- * Reset password with OTP verification - improved error handling
+ * Reset password with OTP verification
  * @param {string} email - User email
  * @param {string} oldPassword - Current password
  * @param {string} newPassword - New password
@@ -2502,56 +2425,22 @@ export const verifyOtp = async (email, code) => {
  */
 export const resetPasswordWithOtp = async (email, oldPassword, newPassword, code) => {
   try {
-    const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanCode = (code || '').trim();
-
-    // Validate required fields
-    if (!cleanEmail || !oldPassword || !newPassword || !cleanCode) {
-      console.error('[Password] ❌ All fields are required (email, oldPassword, newPassword, code)');
-      return {
-        success: false,
-        message: 'Missing required fields'
-      };
-    }
-
-    // Validate password strength
-    if (newPassword.length < 6) {
-      console.error('[Password] ❌ New password must be at least 6 characters');
-      return {
-        success: false,
-        message: 'New password must be at least 6 characters'
-      };
-    }
-
-    console.log('[Password] Resetting password with OTP for:', cleanEmail);
-
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: cleanEmail,
-        oldPassword: oldPassword,
-        newPassword: newPassword,
-        code: cleanCode
+      body: JSON.stringify({ 
+        email,
+        oldPassword,
+        newPassword,
+        code
       })
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error(`[Password] Backend error (${response.status}):`, errorData);
-      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
-    }
-
     const data = await response.json();
     console.log('[Password] Reset with OTP:', data.success ? '✅' : '❌');
-    
     return data;
   } catch (error) {
     console.error('[Password] Reset error:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to reset password'
-    };
+    throw error;
   }
 };
 
