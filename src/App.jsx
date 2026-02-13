@@ -3194,6 +3194,8 @@ const SettingsView = () => {
   const [twoFAQRCode, setTwoFAQRCode] = useState('');          // QR code image URL
   const [showTwoFALoginModal, setShowTwoFALoginModal] = useState(false); // Login 2FA prompt
   const [twoFALoginCode, setTwoFALoginCode] = useState('');    // Code entered at login
+    const [currentUser, setCurrentUser] = useState(null);
+
 
   // --- Handlers ---
 
@@ -3335,7 +3337,7 @@ const SettingsView = () => {
                   const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ username: profile.name })
+                      body: JSON.stringify({ username: currentUser })
                   });
                   const data = await res.json();
                   if (data.success) {
@@ -3354,7 +3356,7 @@ const SettingsView = () => {
               const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username: profile.name })
+                  body: JSON.stringify({ username: currentUser })
               });
               const data = await res.json();
               if (data.success) {
@@ -3378,7 +3380,7 @@ const SettingsView = () => {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                  username: profile.name,
+                  username: currentUser,
                   secret: twoFASecret,
                   token: twoFACode
               })
