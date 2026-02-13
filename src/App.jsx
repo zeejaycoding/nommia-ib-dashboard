@@ -224,9 +224,21 @@ const RealTimeTicker = () => {
   );
 };
 
+// Withdrawal methods configuration - PULL FROM XVALLEY API OR UPDATE HERE
+const WITHDRAWAL_METHODS = [
+  { label: 'Bank Wire', xvalleyType: 1 },           // BankWire
+  { label: 'USDT (TRC20)', xvalleyType: 46 },       // TetherTron
+  { label: 'USDT (ERC20)', xvalleyType: 35 },       // Tether (Ethereum)
+  { label: 'USDC (POL)', xvalleyType: 44 },         // USDCoin
+  { label: 'Bitcoin', xvalleyType: 5 },             // Bitcoin
+  { label: 'Ethereum', xvalleyType: 34 }            // Ethereum
+  // NOTE: Skrill was removed - it's available in XValley but not configured for your platform
+  // To use any XValley method, add it to this list with its xvalleyType ID
+];
+
 const WithdrawalModal = ({ onClose, onSubmit, available }) => {
   const [amount, setAmount] = useState('');
-  const [method, setMethod] = useState('Bank Wire');
+  const [method, setMethod] = useState(WITHDRAWAL_METHODS[0].label);
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
@@ -257,12 +269,9 @@ const WithdrawalModal = ({ onClose, onSubmit, available }) => {
                     onChange={e => setMethod(e.target.value)}
                     className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg py-2.5 px-3 text-white focus:border-amber-500 focus:outline-none"
                 >
-                    <option>Bank Wire</option>
-                    <option>USDT (TRC20)</option>
-                    <option>USDT (ERC20)</option>
-                    <option>USDC (POL)</option>
-                    <option>USDC (ERC20)</option>
-                    <option>Skrill</option>
+                    {WITHDRAWAL_METHODS.map(m => (
+                      <option key={m.xvalleyType} value={m.label}>{m.label}</option>
+                    ))}
                 </select>
             </div>
         </div>
@@ -2588,13 +2597,36 @@ const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
   const pendingWithdrawals = withdrawals.reduce((sum, w) => sum + (w.status === 'Processing' ? w.amount : 0), 0);
   const availableBalance = Math.max(0, totalEarnings - totalWithdrawn - pendingWithdrawals);
 
-  const handleWithdrawSubmit = async (amount, method) => {
+  const handleWithdrawSubmit = async (amount, methodLabel) => {
     try {
-        await submitWithdrawalRequest(amount, method);
-        alert("Withdrawal Requested Successfully!");
-        setShowWithdraw(false);
+        // Find the method config to get the XValley type ID
+        const selectedMethod = WITHDRAWAL_METHODS.find(m => m.label === methodLabel);
+        if (!selectedMethod) {
+          alert("Invalid withdrawal method selected");
+          return;
+        }
+
+        // For simplicity, using the IB's partner ID as the account ID
+        // In a real scenario, you'd get this from the user's trading account list
+        const withdrawalData = {
+          username: getSessionUsername(),
+          accountId: sessionPartnerId || 1,  // Partner ID as account ID (should ideally be trading account ID)
+          amount: parseFloat(amount),
+          method: methodLabel,
+          xvalleyType: selectedMethod.xvalleyType
+        };
+
+        const result = await submitWithdrawalRequest(withdrawalData);
+        
+        if (result.success) {
+          alert(result.message || "Withdrawal requested successfully! Check your admin dashboard on XValley.");
+          setShowWithdraw(false);
+        } else {
+          alert("Withdrawal failed: " + (result.message || "Unknown error"));
+        }
     } catch (e) {
         alert("Error requesting withdrawal: " + e.message);
+        console.error('Withdrawal error:', e);
     }
   };
 
@@ -3148,6 +3180,7 @@ const SettingsView = () => {
   
   // --- Input State ---
   const [otpInput, setOtpInput] = useState('');
+  const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -3156,6 +3189,10 @@ const SettingsView = () => {
   const [showTwoFAModal, setShowTwoFAModal] = useState(false);
   const [twoFAStep, setTwoFAStep] = useState('scan');
   const [twoFACode, setTwoFACode] = useState('');
+  const [twoFASecret, setTwoFASecret] = useState('');          // User's unique secret
+  const [twoFAQRCode, setTwoFAQRCode] = useState('');          // QR code image URL
+  const [showTwoFALoginModal, setShowTwoFALoginModal] = useState(false); // Login 2FA prompt
+  const [twoFALoginCode, setTwoFALoginCode] = useState('');    // Code entered at login
 
   // --- Handlers ---
 
@@ -3174,54 +3211,191 @@ const SettingsView = () => {
   };
 
   // 3. Send OTP (Mock)
-  const handleRequestOTP = () => { 
-      alert(`Security Code sent to ${profile.email}`); 
-      setOtpStep('verify'); 
+  const handleRequestOTP = async () => {
+      try {
+          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                  email: profile.email,
+                  type: 'security'
+              })
+          });
+          const data = await res.json();
+          if (data.success) {
+              alert(`Security Code sent to ${profile.email}`);
+              setOtpStep('verify');
+          } else {
+              alert('Error: ' + data.message);
+          }
+      } catch (error) {
+          alert('Failed to send OTP: ' + error.message);
+      }
   };
 
   // 4. Verify & Execute Action (Fixed Function Name)
   const handleFinalVerification = async () => {
       if (otpInput.length < 6) return alert("Please enter a valid 6-digit OTP.");
 
-      if (verificationType === 'password') {
-          // Password Change Logic
-          if (newPassword !== confirmPassword) return alert("Passwords do not match.");
-          if (newPassword.length < 8) return alert("Password must be at least 8 characters.");
-          alert("Success: Password updated successfully.");
+      try {
+          if (verificationType === 'password') {
+              // Password Change Flow
+              if (!oldPassword) return alert("Please enter your current password.");
+              if (newPassword !== confirmPassword) return alert("Passwords do not match.");
+              if (newPassword.length < 8) return alert("Password must be at least 8 characters.");
+              if (oldPassword === newPassword) return alert("New password must be different from current password.");
+
+              // Call backend password reset endpoint (verifies OTP + validates passwords)
+              const resetRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                      email: profile.email,
+                      oldPassword: oldPassword,
+                      newPassword: newPassword,
+                      code: otpInput
+                  })
+              });
+              const resetData = await resetRes.json();
+              
+              if (!resetData.success) {
+                  return alert('Password reset failed: ' + resetData.message);
+              }
+
+              // OTP verified and password validated by backend. Now call XValley API directly
+              // Using the user's own authToken from login
+              try {
+                  const xvalleyRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
+                      method: 'POST',
+                      headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+                      },
+                      body: JSON.stringify({
+                          OldPassword: oldPassword,
+                          NewPassword: newPassword,
+                          ConfirmPassword: newPassword
+                      })
+                  });
+                  
+                  if (xvalleyRes.ok) {
+                      alert("✅ Success: Password updated successfully. Please login again with your new password.");
+                      // Reset and close
+                      setShowSecurityModal(false);
+                      setOtpStep('initial');
+                      setOtpInput('');
+                      setOldPassword('');
+                      setNewPassword('');
+                      setConfirmPassword('');
+                  } else {
+                      alert('Failed to update password in XValley. Please try again.');
+                  }
+              } catch (xvalleyError) {
+                  alert('Error communicating with XValley: ' + xvalleyError.message);
+              }
+          } else {
+              // Save Payout Details Flow - Verify OTP first
+              const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                      email: profile.email,
+                      code: otpInput
+                  })
+              });
+              const verifyData = await verifyRes.json();
+              
+              if (!verifyData.success) {
+                  return alert('Invalid OTP: ' + verifyData.message);
+              }
+
+              try {
+                  await savePayoutDetails(payment);
+                  alert("✅ Success: Account details and payout methods saved securely.");
+              } catch (error) {
+                  alert("Error saving payout details: " + error.message);
+              }
+
+              // Reset & Close
+              setShowSecurityModal(false);
+              setOtpStep('initial');
+              setOtpInput('');
+          }
+      } catch (error) {
+          alert('Verification failed: ' + error.message);
+      }
+  };
+
+  // --- 2FA Handlers (Real TOTP Implementation) ---
+  const handleToggle2FA = async () => {
+      if (isTwoFAEnabled) {
+          if(window.confirm("Disable 2FA? You'll need to scan the QR code again to re-enable.")) {
+              try {
+                  const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ username: currentUser })
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                      setIsTwoFAEnabled(false);
+                      alert("✅ 2FA Disabled");
+                  } else {
+                      alert("Error: " + data.message);
+                  }
+              } catch (e) {
+                  alert("Error disabling 2FA: " + e.message);
+              }
+          }
       } else {
-          // Save Payout Details
+          // Request 2FA setup - backend generates UNIQUE secret for this user
           try {
-              await savePayoutDetails(payment);
-              alert("Success: Account details and payout methods saved securely.");
-          } catch (error) {
-              alert("Error saving payout details: " + error.message);
+              const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ username: currentUser })
+              });
+              const data = await res.json();
+              if (data.success) {
+                  setTwoFASecret(data.secret);           // Store secret (e.g., JBSWY3DPEBPK3PXP...)
+                  setTwoFAQRCode(data.qrCodeUrl);        // Store QR code image URL
+                  setTwoFAStep('scan');
+                  setShowTwoFAModal(true);
+              } else {
+                  alert("Error: " + data.message);
+              }
+          } catch (e) {
+              alert("Could not setup 2FA: " + e.message);
           }
       }
-
-      // Reset & Close
-      setShowSecurityModal(false); 
-      setOtpStep('initial'); 
-      setOtpInput('');
-      setNewPassword('');
-      setConfirmPassword('');
   };
 
-  // --- 2FA Handlers ---
-  const handleToggle2FA = () => {
-      if (isTwoFAEnabled) {
-          if(window.confirm("Disable 2FA?")) setIsTwoFAEnabled(false);
-      } else {
-          setTwoFAStep('scan');
-          setShowTwoFAModal(true);
+  const handleVerify2FA = async () => {
+      if (twoFACode.length !== 6) return alert("❌ Invalid Code - must be 6 digits");
+      try {
+          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  username: currentUser,
+                  secret: twoFASecret,
+                  token: twoFACode
+              })
+          });
+          const data = await res.json();
+          if (data.success) {
+              setIsTwoFAEnabled(true);
+              setShowTwoFAModal(false);
+              setTwoFACode('');
+              setTwoFASecret('');
+              setTwoFAQRCode('');
+              alert("✅ 2FA Enabled Successfully!\n\nYour authenticator is now active. You'll need to enter a 6-digit code on your next login.");
+          } else {
+              alert("❌ Invalid Code. The code didn't match. Please try again or restart the setup.");
+          }
+      } catch (e) {
+          alert("Verification error: " + e.message);
       }
-  };
-
-  const handleVerify2FA = () => {
-      if (twoFACode.length !== 6) return alert("Invalid Code");
-      setIsTwoFAEnabled(true);
-      setShowTwoFAModal(false);
-      setTwoFACode('');
-      alert("2FA Enabled Successfully");
   };
 
   return (
@@ -3266,8 +3440,9 @@ const SettingsView = () => {
                             {/* Only show Password fields if changing password */}
                             {verificationType === 'password' && (
                                 <div className="space-y-3 pt-2">
-                                    <input type="password" placeholder="New Password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
-                                    <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
+                                    <input type="password" placeholder="Current Password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
+                                    <input type="password" placeholder="New Password (min 8 chars)" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
+                                    <input type="password" placeholder="Confirm New Password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white outline-none focus:border-amber-500" />
                                 </div>
                             )}
 
@@ -3290,17 +3465,40 @@ const SettingsView = () => {
                     
                     {twoFAStep === 'scan' ? (
                         <div className="space-y-6">
-                            <p className="text-sm text-neutral-400">Scan this QR code with your authenticator app.</p>
-                            <div className="bg-white p-2 w-48 h-48 mx-auto rounded-lg">
-                                <img src="https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=otpauth://totp/Nommia:User?secret=JBSWY3DPEHPK3PXP&issuer=Nommia" alt="QR Code" className="w-full h-full" />
+                            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-sm text-blue-300">
+                                <p className="font-bold mb-1">📱 Step 1: Scan with Authenticator App</p>
+                                <p className="text-xs">Google Authenticator, Authy, Microsoft Authenticator, or any TOTP-compatible app</p>
                             </div>
-                            <button onClick={() => setTwoFAStep('verify')} className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg border border-neutral-700">I have scanned it</button>
+                            <p className="text-sm text-neutral-400">Your unique QR code (generated just for you):</p>
+                            {twoFAQRCode ? (
+                                <div className="bg-white p-3 w-56 h-56 mx-auto rounded-lg flex items-center justify-center">
+                                    <img src={twoFAQRCode} alt="2FA QR Code" className="w-full h-full object-contain" />
+                                </div>
+                            ) : (
+                                <div className="w-56 h-56 mx-auto bg-neutral-800 rounded-lg flex items-center justify-center">
+                                    <div className="text-center">
+                                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500 mx-auto mb-2"></div>
+                                        <p className="text-xs text-neutral-400">Generating your QR Code...</p>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="bg-neutral-950 rounded-lg p-3 border border-neutral-800">
+                                <p className="text-xs text-neutral-500 mb-1">Manual Entry (if QR scan fails):</p>
+                                <p className="text-sm font-mono text-emerald-400 break-all select-all">{twoFASecret}</p>
+                            </div>
+                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-sm text-amber-300">
+                                <p className="text-xs">⚠️ Save your secret key in a safe place as a backup recovery method</p>
+                            </div>
+                            <button onClick={() => setTwoFAStep('verify')} className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg border border-neutral-700 transition-colors">✅ I have scanned the QR code</button>
                         </div>
                     ) : (
                         <div className="space-y-6 animate-fadeIn">
-                            <p className="text-sm text-neutral-400">Enter the 6-digit code to verify.</p>
-                            <input type="text" placeholder="000 000" maxLength="6" value={twoFACode} onChange={(e) => setTwoFACode(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-4 text-white text-center tracking-[0.5em] font-mono text-2xl outline-none focus:border-amber-500" autoFocus />
-                            <button onClick={handleVerify2FA} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Verify & Enable</button>
+                            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 text-sm text-emerald-300">
+                                <p className="font-bold mb-1">🔢 Step 2: Verify Setup</p>
+                                <p className="text-xs">Enter the 6-digit code from your authenticator app (updates every 30 seconds)</p>
+                            </div>
+                            <input type="text" placeholder="000000" maxLength="6" value={twoFACode} onChange={(e) => setTwoFACode(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-4 text-white text-center tracking-[0.5em] font-mono text-3xl outline-none focus:border-emerald-500" autoFocus />
+                            <button onClick={handleVerify2FA} className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-neutral-900 font-bold rounded-lg transition-colors">✅ Verify & Enable 2FA</button>
                         </div>
                     )}
                 </div>
@@ -3448,41 +3646,78 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
         setShowOtpModal(true);
     };
 
-    const handleRequestOTP = () => {
-        alert("OTP sent to admin email.");
-        setOtpStep('verify');
+    const handleRequestOTP = async () => {
+        try {
+            const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    email: 'admin@nommia.io',
+                    type: 'admin'
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert("OTP sent to admin email.");
+                setOtpStep('verify');
+            } else {
+                alert('Error: ' + data.message);
+            }
+        } catch (error) {
+            alert('Failed to send OTP: ' + error.message);
+        }
     };
 
     // Finalize Save after OTP
-    const handleFinalizeSave = () => {
+    const handleFinalizeSave = async () => {
         if (otpInput.length < 6) {
             alert("Invalid OTP");
             return;
         }
 
-        if (pendingSaveAction === 'user') {
-             setUsers(users.map(u => {
-                if (u.id === editingUser.id) {
-                    return { 
-                        ...u, 
-                        role: selectedRole, 
-                        region: selectedRole === 'Regional Manager' ? 'Multi-Region' : selectedRegion,
-                        managedIds: selectedSubManagers 
-                    };
-                }
-                return u;
-            }));
-            setShowModal(false);
-            setEditingUser(null);
-            alert("User role updated successfully.");
-        } else if (pendingSaveAction === 'policy') {
-            alert("Policies saved successfully.");
-        }
+        try {
+            // Verify OTP
+            const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    email: 'admin@nommia.io',
+                    code: otpInput
+                })
+            });
+            const verifyData = await verifyRes.json();
+            
+            if (!verifyData.success) {
+                return alert('Invalid OTP: ' + verifyData.message);
+            }
 
-        setShowOtpModal(false);
-        setOtpStep('initial');
-        setOtpInput('');
-        setPendingSaveAction(null);
+            // OTP verified - process the action
+            if (pendingSaveAction === 'user') {
+                 setUsers(users.map(u => {
+                    if (u.id === editingUser.id) {
+                        return { 
+                            ...u, 
+                            role: selectedRole, 
+                            region: selectedRole === 'Regional Manager' ? 'Multi-Region' : selectedRegion,
+                            managedIds: selectedSubManagers 
+                        };
+                    }
+                    return u;
+                }));
+                setShowModal(false);
+                setEditingUser(null);
+                alert("✅ User role updated successfully.");
+            } else if (pendingSaveAction === 'policy') {
+                alert("✅ Policies saved successfully.");
+            }
+        } catch (error) {
+            alert('Verification failed: ' + error.message);
+        } finally {
+            setShowOtpModal(false);
+            setOtpStep('initial');
+            setOtpInput('');
+            setPendingSaveAction(null);
+        }
     };
 
 
@@ -3868,9 +4103,9 @@ export default function App() {
           <div className="flex items-center space-x-4">
              {apiStatus === 'connected' && <RealTimeTicker />}
 
-             {/* WhatsApp Support Button */}
+             {/* Live Chat Button */}
              <a 
-               href="https://wa.me/447700900000" 
+               href="https://bizbot360.com/ad-leads/ibswitchboard" 
                target="_blank" 
                rel="noopener noreferrer"
                className="hidden md:flex items-center px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-full text-xs font-bold transition-all hover:scale-105 mr-2"

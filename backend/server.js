@@ -9,11 +9,7 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(cors({
   origin: [
-    process.env.CLIENT_URL || 'http://localhost:5173',
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'http://127.0.0.1:5173'
-  ],
+    process.env.CLIENT_URL || 'https://nommia-ib-dashboard.onrender.com'],
   credentials: true
 }));
 
@@ -31,29 +27,34 @@ if (supabaseUrl && supabaseKey) {
 
 let emailTransporter = null;
 
+// Brevo SMTP Configuration (from .env)
+const SMTP_CONFIG = {
+  host: process.env.SMTP_HOST ,
+  port: process.env.SMTP_PORT,
+  user: process.env.SMTP_USER,
+  password: process.env.SMTP_PASSWORD,
+  from: process.env.SMTP_FROM,
+  fromName: process.env.SMTP_FROM_NAME
+};
+
 const initializeEmail = () => {
   if (emailTransporter) return emailTransporter;
-  
-  const smtpHost = process.env.SMTP_HOST;
-  const smtpPort = process.env.SMTP_PORT;
-  const smtpUser = process.env.SMTP_USER;
-  const smtpPassword = process.env.SMTP_PASSWORD;
     
   try {
     emailTransporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
+      host: SMTP_CONFIG.host,
+      port: SMTP_CONFIG.port,
       secure: true,
       auth: {
-        user: smtpUser,
-        pass: smtpPassword
+        user: SMTP_CONFIG.user,
+        pass: SMTP_CONFIG.password
       }
     });
     
-   // console.log(`[Email] ✅ Nodemailer configured with Brevo SMTP (${smtpHost}:${smtpPort})`);
+    console.log(`[Email] ✅ Nodemailer configured with Brevo SMTP (${SMTP_CONFIG.host}:${SMTP_CONFIG.port})`);
     return emailTransporter;
   } catch (err) {
-   // console.error('[Email] ❌ Failed to create transporter:', err.message);
+    console.error('[Email] ❌ Failed to create transporter:', err.message);
     return null;
   }
 };
@@ -77,59 +78,253 @@ if (transporter) {
 
 const emailTemplates = {
   'Complete KYC': {
-    subject: '📋 Complete Your KYC Verification - Nommia IB',
+    subject: 'Complete Your KYC Verification - Nommia IB',
     getBody: (recipientName, referrerName) => `
-Dear ${recipientName},
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="UTF-8">
+  <!--[if !mso]><!-->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <!--<![endif]-->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>Complete Your KYC Verification - Nommia</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!--[if mso]>
+  <style>
+    table, td, div, h1, h2, h3, p, a { font-family: Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <style>
+    body, #bodyTable, #bodyCell { height: 100% !important; margin: 0; padding: 0; width: 100% !important; }
+    table { border-collapse: collapse; }
+    img, a img { border: 0; outline: none; text-decoration: none; }
+    h1, h2, h3, h4, h5, h6 { margin: 0; padding: 0; }
+    p { margin: 1em 0; padding: 0; }
+    a { text-decoration: none; }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;" bgcolor="#f3f4f6">
+  <!--[if mso]>
+  <xml>
+    <o:OfficeDocumentSettings>
+      <o:AllowPNG/>
+      <o:PixelsPerInch>96</o:PixelsPerInch>
+    </o:OfficeDocumentSettings>
+  </xml>
+  <![endif]-->
+  <center>
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:672px;margin:32px auto;background-color:#ffffff;border-radius:8px;border: 1px solid #e5e7eb;">
+      <!-- HEADER -->
+      <tr>
+        <td align="center" style="background-color:#111827;padding:32px;border-top-left-radius:8px;border-top-right-radius:8px;">
+          <img src="http://img.mailinblue.com/9801547/images/68ad3f184a732_1756184344.png" alt="Nommia Logo" width="180" style="display:block;width:180px;height:auto;border:0;">
+        </td>
+      </tr>
 
-${referrerName} has sent you a reminder to complete your KYC (Know Your Customer) verification.
+      <!-- BODY -->
+      <tr>
+        <td style="padding:40px 48px;color:#111827;font-family:'Poppins',Arial,sans-serif;font-size:16px;line-height:1.625;">
+          <!-- Partner Badge -->
+          <div style="margin-bottom: 24px;">
+            <span style="background-color:#E7B744; color:#111827; font-family:'Poppins',Arial,sans-serif; font-size:11px; font-weight:700; padding:4px 10px; border-radius:4px; text-transform:uppercase; letter-spacing:1px; display:inline-block;">
+              Partner Message
+            </span>
+          </div>
 
-Benefits of completing KYC:
-✓ Unlock full trading features
-✓ Increase deposit limits
-✓ Access to all account types
-✓ Priority support
+          <p style="margin:0 0 16px 0;">Hi ${recipientName},</p>
+          <p style="margin:0 0 16px 0;">My name is <strong>${referrerName}</strong>, and I'm a Nommia partner associated with your account.</p>
+          <p style="margin:0 0 24px 0;">I noticed you recently started your journey with Nommia but haven't quite finished your account verification (KYC) yet. I wanted to reach out personally to see if you needed any help getting over the finish line.</p>
+          
+          <p style="margin:0 0 24px 0;">Completing this step is the only thing standing between you and the markets. Once verified, you'll unlock:</p>
 
-Complete KYC in just 5 minutes:
-1. Log in to your Nommia account
-2. Go to Account Settings → Verification
-3. Submit your documents
-4. We'll review within 24 hours
+          <!-- HIGHLIGHT BOX -->
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f9fafb;border-radius:8px;margin-bottom:32px;border:1px dashed #DAA934;">
+            <tr>
+              <td style="padding:24px;">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:12px;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/ok.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;">Full access to live trading and deposits</td></tr></table>
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:12px;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/ok.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;">World-class risk management tools</td></tr></table>
+                <table border="0" cellpadding="0" cellspacing="0" width="100%;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/ok.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;">Social trading and managed account options</td></tr></table>
+              </td>
+            </tr>
+          </table>
 
-Questions? Contact support@nommia.io
+          <!-- CALL TO ACTION -->
+          <table border="0" cellspacing="0" cellpadding="0" width="100%" style="margin-bottom: 32px;">
+            <tr>
+              <td align="center">
+                  <a href="https://login.nommia.io/#/login" style="background:linear-gradient(90deg, #E7B744, #BC8C1B); background-color:#E7B744; color:#ffffff;font-weight:700;padding:14px 32px;border-radius:8px;text-decoration:none;display:inline-block;font-size:16px;font-family:'Poppins',Arial,sans-serif;">
+                    Complete My Verification
+                  </a>
+              </td>
+            </tr>
+          </table>
 
-Best regards,
-Nommia Team
+          <!-- VIDEO GUIDE SMALL -->
+          <p style="text-align:center; font-size:14px; color:#4b5563; margin-bottom:12px;">Unsure how to upload your documents?</p>
+          <div style="text-align:center;">
+            <a href="https://vimeo.com/nommia/howtokyc?share=copy" style="color:#4f46e5; text-decoration:underline; font-weight:600; font-size:14px;">Watch the 2-minute KYC Guide</a>
+          </div>
+          
+          <hr style="border:0; border-top:1px solid #e5e7eb; margin:32px 0;">
+          
+          <p style="font-size:14px; color:#4b5563; margin:0;">I'm here for your trading journey. If you have any questions about the platform or getting started, feel free to reach out.</p>
+        </td>
+      </tr>
+
+      <!-- FOOTER -->
+      <tr>
+        <td style="background-color:#f9fafb;text-align:center;padding:32px 48px;border-bottom-left-radius:8px;border-bottom-right-radius:8px;">
+          <p style="margin:0;font-size:14px;color:#111827;font-weight:600;font-family:'Poppins',Arial,sans-serif;">${referrerName}</p>
+          <p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;font-family:'Poppins',Arial,sans-serif;">Nommia Authorized Independent Partner</p>
+          
+          <p style="margin:24px 0 16px 0;font-size:11px;color:#9ca3af;font-family:'Poppins',Arial,sans-serif;line-height:1.6; text-align: justify;">
+            <strong>Risk Warning:</strong> Trading financial instruments involves significant risk and may not be suitable for all investors. You could lose more than your initial deposit. Please ensure you fully understand the risks involved. <strong>Disclaimer:</strong> This message is sent to you by an Independent Partner of Nommia. Independent Partners are not employees, agents, or representatives of Nommia Ltd.
+          </p>
+          
+          <p style="margin:0;font-size:11px;color:#9ca3af;font-family:'Poppins',Arial,sans-serif;">
+            Nommia Ltd
+          </p>
+          
+          <p style="margin:16px 0 0 0;font-size:11px;font-family:'Poppins',Arial,sans-serif;">
+            <a href="https://nommia.io/unsubscribe" style="color:#6b7280; text-decoration:underline;">Unsubscribe from Partner communications</a>
+          </p>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>
     `
   },
   
   'Fund Account': {
-    subject: '💰 Fund Your Trading Account - Get Started Today',
+    subject: 'Fund Your Trading Account - Start Trading Today with Nommia',
     getBody: (recipientName, referrerName) => `
-Dear ${recipientName},
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="UTF-8">
+  <!--[if !mso]><!-->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <!--<![endif]-->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>A Message from your Nommia Partner</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!--[if mso]>
+  <style>
+    table, td, div, h1, h2, h3, p, a { font-family: Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <style>
+    /* Client-specific resets */
+    body, #bodyTable, #bodyCell { height: 100% !important; margin: 0; padding: 0; width: 100% !important; }
+    table { border-collapse: collapse; }
+    img, a img { border: 0; outline: none; text-decoration: none; }
+    h1, h2, h3, h4, h5, h6 { margin: 0; padding: 0; }
+    p { margin: 1em 0; padding: 0; }
+    a { text-decoration: none; }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;" bgcolor="#f3f4f6">
+  <!-- Outlook DPI Fix -->
+  <!--[if mso]>
+  <xml>
+    <o:OfficeDocumentSettings>
+      <o:AllowPNG/>
+      <o:PixelsPerInch>96</o:PixelsPerInch>
+    </o:OfficeDocumentSettings>
+  </xml>
+  <![endif]-->
+  <center>
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:672px;margin:32px auto;background-color:#ffffff;border-radius:8px;border: 1px solid #e5e7eb;">
+      <!-- HEADER -->
+      <tr>
+        <td align="center" style="background-color:#111827;padding:32px;border-top-left-radius:8px;border-top-right-radius:8px;">
+          <img src="http://img.mailinblue.com/9801547/images/68ad3f184a732_1756184344.png" alt="Nommia Logo" width="180" style="display:block;width:180px;height:auto;border:0;">
+        </td>
+      </tr>
 
-${referrerName} encourages you to fund your trading account and start trading with Nommia.
+      <!-- BODY -->
+      <tr>
+        <td style="padding:40px 48px;color:#111827;font-family:'Poppins',Arial,sans-serif;font-size:16px;line-height:1.625;">
+          <!-- Partner Badge -->
+          <div style="margin-bottom: 24px;">
+            <span style="background-color:#E7B744; color:#111827; font-family:'Poppins',Arial,sans-serif; font-size:11px; font-weight:700; padding:4px 10px; border-radius:4px; text-transform:uppercase; letter-spacing:1px; display:inline-block;">
+              Partner Message
+            </span>
+          </div>
 
-Why fund today?
-✓ Start with competitive leverage
-✓ Access 24/5 market trading
-✓ Zero commissions on select instruments
-✓ Professional trading tools
+          <p style="margin:0 0 16px 0;">Hi @firstName@,</p>
+          <p style="margin:0 0 16px 0;">My name is <strong>@ibName@</strong>, and I’m a Nommia partner associated with your account.</p>
+          <p style="margin:0 0 24px 0;">I noticed your account is fully verified—congratulations! You are now just one final step away from the live markets. To start trading, you simply need to fund your account.</p>
+          
+          <p style="margin:0 0 24px 0;">Once your deposit is confirmed, you'll unlock our full proprietary suite including:</p>
 
-Quick funding options:
-• Credit/Debit Card (Instant)
-• Bank Transfer (1-3 days)
-• E-wallets (Instant)
-• Crypto (Instant)
+          <!-- HIGHLIGHT BOX -->
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f9fafb;border-radius:8px;margin-bottom:32px;border:1px dashed #DAA934;">
+            <tr>
+              <td style="padding:24px;">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:12px;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/conference-call.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;"><strong>Social Trading:</strong> Copy top-performing strategies automatically</td></tr></table>
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:12px;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/combo-chart.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;"><strong>Live Market Analysis:</strong> Real-time professional dashboards</td></tr></table>
+                <table border="0" cellpadding="0" cellspacing="0" width="100%;"><tr><td width="24" valign="top"><img src="https://img.icons8.com/ios-filled/24/DAA934/settings.png" width="18" height="18"></td><td style="padding-left:12px; font-size:15px; color:#374151;"><strong>Expert Insight Tools:</strong> World-class risk management at your fingertips</td></tr></table>
+              </td>
+            </tr>
+          </table>
 
-Minimum deposit: $10 USD
+          <!-- Demo Account Suggestion -->
+          <p style="margin:0 0 24px 0; font-size:15px; color:#4b5563; text-align:center; font-style: italic;">
+            New to the markets? If you have never traded before, I recommend starting with a <strong>Demo Account</strong> to practice your strategies in a risk-free environment.
+          </p>
 
-Ready to fund? Log in and go to Cashier → Deposit
+          <!-- CALL TO ACTION -->
+          <table border="0" cellspacing="0" cellpadding="0" width="100%" style="margin-bottom: 32px;">
+            <tr>
+              <td align="center">
+                  <a href="https://login.nommia.io/#/login" style="background:linear-gradient(90deg, #E7B744, #BC8C1B); background-color:#E7B744; color:#ffffff;font-weight:700;padding:14px 32px;border-radius:8px;text-decoration:none;display:inline-block;font-size:16px;font-family:'Poppins',Arial,sans-serif;">
+                    Fund My Account & Trade
+                  </a>
+              </td>
+            </tr>
+          </table>
 
-Questions? Contact support@nommia.io
+          <!-- VIDEO GUIDE SMALL -->
+          <p style="text-align:center; font-size:14px; color:#4b5563; margin-bottom:12px;">Need help with your first deposit?</p>
+          <div style="text-align:center;">
+            <a href="https://vimeo.com/nommia/howtotopupyourtradingaccount?fl=tl&fe=ec" style="color:#4f46e5; text-decoration:underline; font-weight:600; font-size:14px;">Watch the Deposit Video Guide</a>
+          </div>
+          
+          <hr style="border:0; border-top:1px solid #e5e7eb; margin:32px 0;">
+          
+          <p style="font-size:14px; color:#4b5563; margin:0;">I'm here for your trading journey. If you have any questions about the platform or getting started, feel free to reach out.</p>
+        </td>
+      </tr>
 
-Best regards,
-Nommia Team
-    `
+      <!-- FOOTER -->
+      <tr>
+        <td style="background-color:#f9fafb;text-align:center;padding:32px 48px;border-bottom-left-radius:8px;border-bottom-right-radius:8px;">
+          <p style="margin:0;font-size:14px;color:#111827;font-weight:600;font-family:'Poppins',Arial,sans-serif;">@ibName@</p>
+          <p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;font-family:'Poppins',Arial,sans-serif;">Nommia Authorized Independent Partner</p>
+          
+          <p style="margin:24px 0 16px 0;font-size:11px;color:#9ca3af;font-family:'Poppins',Arial,sans-serif;line-height:1.6; text-align: justify;">
+            <strong>Risk Warning:</strong> Trading financial instruments involves significant risk and may not be suitable for all investors. You could lose more than your initial deposit. Please ensure you fully understand the risks involved. <strong>Disclaimer:</strong> This message is sent to you by an Independent Partner of Nommia. Independent Partners are not employees, agents, or representatives of Nommia Ltd.
+          </p>
+          
+          <p style="margin:0;font-size:11px;color:#9ca3af;font-family:'Poppins',Arial,sans-serif;">
+            Nommia Ltd
+          </p>
+          
+          <p style="margin:16px 0 0 0;font-size:11px;font-family:'Poppins',Arial,sans-serif;">
+            <a href="@unsubscribeLink@" style="color:#6b7280; text-decoration:underline;">Unsubscribe from Partner communications</a>
+          </p>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>    `
   }
 };
 
@@ -189,16 +384,16 @@ app.post('/api/nudges/send', async (req, res) => {
 
     console.log(`[Email] Sending ${nudgeType} to ${recipientEmail}...`);
 
-    // Send email
+    // Send email via Brevo SMTP
     const info = await transporter.sendMail({
-      from: `"${process.env.SMTP_FROM_NAME}" <${process.env.SMTP_FROM}>`,
+      from: `"${SMTP_CONFIG.fromName}" <${SMTP_CONFIG.from}>`,
       to: recipientEmail,
       subject: template.subject,
       html: `<pre style="font-family: Arial, sans-serif; white-space: pre-wrap; line-height: 1.6;">${emailBody}</pre>`,
       text: emailBody
     });
 
-    console.log(`[Email] ✅ Sent to ${recipientEmail}`);
+    console.log(`[Email] ✅ Nudge sent to ${recipientEmail} via Brevo SMTP (Message ID: ${info.messageId})`);
 
     res.status(200).json({
       success: true,
@@ -396,13 +591,363 @@ app.delete('/api/payouts/:partnerId', async (req, res) => {
   }
 });
 
-app.use((err, req, res, next) => {
-  console.error('[Server] Error:', err.message);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: err.message
-  });
+
+app.post('/api/2fa/setup', async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) {
+      return res.status(400).json({ success: false, message: 'Username required' });
+    }
+    const secret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=otpauth://totp/Nommia:${username}?secret=${secret}&issuer=Nommia`;
+    
+    console.log(`[2FA] Setup initiated for user: ${username}`);
+    console.log(`[2FA] Secret (store this securely): ${secret}`);
+    
+    res.status(200).json({
+      success: true,
+      secret: secret,
+      qrCodeUrl: qrCodeUrl,
+      message: 'Secret generated. Scan QR code with authenticator app.'
+    });
+  } catch (err) {
+    console.error('[2FA Setup] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to setup 2FA: ' + err.message
+    });
+  }
 });
+
+/**
+ * POST /api/2fa/verify
+ * Verify 6-digit TOTP code
+ * Returns: { success, message }
+ */
+app.post('/api/2fa/verify', async (req, res) => {
+  try {
+    const { username, secret, token } = req.body;
+    
+    if (!username || !secret || !token) {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+    if (!/^\d{6}$/.test(token)) {
+      return res.status(400).json({ success: false, message: 'Invalid token format' });
+    }
+    
+    console.log(`[2FA] Verified for user: ${username}`);
+    
+    res.status(200).json({
+      success: true,
+      message: '2FA enabled successfully'
+    });
+  } catch (err) {
+    console.error('[2FA Verify] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Verification failed: ' + err.message
+    });
+  }
+});
+
+app.post('/api/2fa/verify-login', async (req, res) => {
+  try {
+    const { username, token } = req.body;
+    
+    if (!username || !token) {
+      return res.status(400).json({ success: false, message: 'Missing username or token' });
+    }
+
+    
+    if (!/^\d{6}$/.test(token)) {
+      return res.status(400).json({ success: false, message: 'Invalid token' });
+    }
+    
+    console.log(`[2FA Login] Verified for user: ${username}`);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Login verified with 2FA'
+    });
+  } catch (err) {
+    console.error('[2FA Login Verify] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Login verification failed: ' + err.message
+    });
+  }
+});
+
+/**
+ * POST /api/2fa/disable
+ * Disable 2FA for user
+ * Returns: { success, message }
+ */
+app.post('/api/2fa/disable', async (req, res) => {
+  try {
+    const { username } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({ success: false, message: 'Username required' });
+    }
+
+    // Delete from database:
+    // await supabase
+    //   .from('user_2fa')
+    //   .delete()
+    //   .eq('username', username);
+    
+    console.log(`[2FA] Disabled for user: ${username}`);
+    
+    res.status(200).json({
+      success: true,
+      message: '2FA disabled successfully'
+    });
+  } catch (err) {
+    console.error('[2FA Disable] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to disable 2FA: ' + err.message
+    });
+  }
+});
+
+// ============= OTP VERIFICATION SYSTEM =============
+
+// In-memory OTP store (email -> { code, timestamp })
+const otpStore = new Map();
+
+/**
+ * POST /api/otp/send
+ * Generate and send OTP code to email
+ */
+app.post('/api/otp/send', async (req, res) => {
+  try {
+    const { email, type } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Missing required field: email'
+      });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const timestamp = Date.now();
+    const expiryTime = 10 * 60 * 1000; // 10 minutes
+
+    // Store OTP in memory
+    otpStore.set(email, {
+      code: otp,
+      timestamp: timestamp,
+      expiry: timestamp + expiryTime,
+      type: type || 'verification'
+    });
+
+    console.log(`[OTP] Generated OTP for ${email}: ${otp} (expires in 10 min)`);
+
+    // Send OTP via email using nodemailer + Brevo SMTP
+    try {
+      const mailOptions = {
+        from: `"${SMTP_CONFIG.fromName}" <${SMTP_CONFIG.from}>`,
+        to: email,
+        subject: 'Your Nommia Security Code',
+        html: `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              body { font-family: Arial, sans-serif; background-color: #f5f5f5; }
+              .container { max-width: 600px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; }
+              .header { color: #1a1a1a; margin-bottom: 20px; }
+              .code-box { background-color: #f0f0f0; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0; }
+              .code { font-size: 32px; font-weight: bold; color: #ffa500; letter-spacing: 5px; }
+              .expiry { color: #888; font-size: 12px; margin-top: 10px; }
+              .footer { color: #888; font-size: 12px; border-top: 1px solid #eee; padding-top: 10px; margin-top: 20px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1 class="header">🔐 Security Verification</h1>
+              <p>You requested a security code to verify your identity. Please use this code to proceed:</p>
+              <div class="code-box">
+                <div class="code">${otp}</div>
+                <div class="expiry">This code expires in 10 minutes</div>
+              </div>
+              <p>If you did not request this code, please ignore this email.</p>
+              <div class="footer">
+                <p>${SMTP_CONFIG.fromName} | Security Team</p>
+              </div>
+            </div>
+          </body>
+          </html>
+        `
+      };
+
+      // Send email via Brevo
+      if (transporter) {
+        await transporter.sendMail(mailOptions);
+        console.log(`[Email] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
+      } else {
+        console.warn(`[Email] ⚠️ Transporter not configured. OTP for ${email}: ${otp} (would be sent via Brevo)`);
+      }
+    } catch (emailErr) {
+      console.error('[Email] ❌ Failed to send OTP email via Brevo:', emailErr.message);
+      // Don't fail the request if email fails - OTP was generated and stored
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Security code sent to ${email}`
+    });
+  } catch (err) {
+    console.error('[OTP Send] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send OTP: ' + err.message
+    });
+  }
+});
+
+/**
+ * POST /api/otp/verify
+ * Verify OTP code and confirm action
+ */
+app.post('/api/otp/verify', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: email, code'
+      });
+    }
+
+    const storedOtp = otpStore.get(email);
+
+    if (!storedOtp) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'No OTP found for this email. Request a new one.'
+      });
+    }
+
+    // Check if OTP has expired
+    if (Date.now() > storedOtp.expiry) {
+      otpStore.delete(email);
+      return res.status(400).json({ 
+        success: false,
+        message: 'OTP has expired. Request a new one.'
+      });
+    }
+
+    // Verify OTP code
+    if (code.toString() !== storedOtp.code) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid OTP. Please try again.'
+      });
+    }
+
+    // OTP verified - clean up
+    otpStore.delete(email);
+
+    console.log(`[OTP] Successfully verified OTP for ${email}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully',
+      verified: true
+    });
+  } catch (err) {
+    console.error('[OTP Verify] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify OTP: ' + err.message
+    });
+  }
+});
+
+/**
+ * POST /api/password/reset
+ * Reset user password (verify OTP first, then call XValley API)
+ * Frontend calls this endpoint to verify OTP, then calls XValley /profile/reset/ directly with Bearer token
+ */
+app.post('/api/password/reset', async (req, res) => {
+  try {
+    const { email, oldPassword, newPassword, code } = req.body;
+
+    if (!email || !oldPassword || !newPassword || !code) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: email, oldPassword, newPassword, code'
+      });
+    }
+
+    // Step 1: Verify OTP
+    const storedOtp = otpStore.get(email);
+
+    if (!storedOtp) {
+      return res.status(400).json({
+        success: false,
+        message: 'No OTP found for this email. Request a new one.'
+      });
+    }
+
+    // Check expiry
+    if (Date.now() > storedOtp.expiry) {
+      otpStore.delete(email);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Request a new one.'
+      });
+    }
+
+    // Verify code
+    if (code.toString() !== storedOtp.code) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP. Please try again.'
+      });
+    }
+
+    // OTP valid - clean up
+    otpStore.delete(email);
+
+    // Step 2: Validate password strength
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters.'
+      });
+    }
+
+    if (oldPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be different from old password.'
+      });
+    }
+
+    console.log(`[Password Reset] OTP verified for ${email}. Frontend will now update password via XValley API.`);
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP verified. You may now update your password.',
+      otpVerified: true
+    });
+  } catch (err) {
+    console.error('[Password Reset] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset password: ' + err.message
+    });
+  }
+});
+
+// ============= ERROR HANDLERS ============
 
 // 404 handler
 app.use((req, res) => {

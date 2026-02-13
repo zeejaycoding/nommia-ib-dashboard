@@ -12,6 +12,7 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 
 const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
+  BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   // Use the local Vite proxy in development, direct URL in production
   WS_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
   REALM: "fxplayer",
@@ -86,6 +87,10 @@ export const loginAndGetToken = async (username, password) => {
     
     // XValley returns refresh_token from /token endpoint
     authToken = data.refresh_token || data.refreshToken || data.token || data.access_token;
+    // Store in localStorage for password reset endpoint
+    if (authToken) {
+      localStorage.setItem('authToken', authToken);
+    }
     //console.log("Auth token obtained:", authToken ? "Yes" : "No");
     return authToken;
   } catch (error) {
@@ -1395,9 +1400,100 @@ export const resetUserPassword = async (username) => {
   return { success: true };
 };
 
+/**
+ * Submit withdrawal request to XValley
+ * Maps withdrawal method to XValley transaction type and submits via Deposit Action topic
+ * @param {Object} data - Withdrawal data
+ * @param {string} data.username - Username (trading account owner)
+ * @param {number} data.accountId - Trading Account ID
+ * @param {number} data.amount - Withdrawal amount
+ * @param {string} data.method - Withdrawal method label (e.g., "Bank Wire", "USDT (TRC20)")
+ * @param {number} data.xvalleyType - XValley transaction type ID
+ * @param {string} data.reference - Optional reference/invoice number
+ * @returns {Promise<{success: boolean, message: string, transactionId?: string}>}
+ * 
+ * Transaction Type IDs (from XValley Appendix A):
+ * 1=BankWire, 5=Bitcoin, 34=Ethereum, 35=Tether, 44=USDCoin, 46=TetherTron(TRC20)
+ * Side values (Appendix D): 1=Deposit, 2=Withdraw
+ * State values (Appendix C): 1=Pending, 2=Processing, 3=Approved, 4=Rejected
+ */
 export const submitWithdrawalRequest = async (data) => {
-  // Stub
-  return { success: true };
+  try {
+    if (!wsSession || !sessionPartnerId) {
+      return { success: false, message: 'WebSocket not connected. Please reconnect.' };
+    }
+
+    // Validate required fields
+    if (!data.username || !data.accountId || !data.amount || !data.xvalleyType) {
+      return { success: false, message: 'Missing required withdrawal data' };
+    }
+
+    // Prepare the withdrawal request for XValley Deposit Action API
+    const withdrawalData = {
+      TA: data.amount,              // Transaction Amount
+      AA: data.amount,              // Account Amount
+      F: 0,                         // Fee (set by admin later if needed)
+      R: 1,                         // Rate (1:1 conversion)
+      D: new Date().toISOString().split('T')[0],  // Date
+      TId: data.xvalleyType,        // Type ID (e.g., 1=BankWire, 35=Tether, etc.)
+      TCId: 1,                      // Transaction Currency (1=USD)
+      ACId: 1,                      // Account Currency (1=USD)
+      St: 1,                        // State (1=Pending - awaiting approval)
+      TrId: data.accountId,         // Trading Account ID
+      In: data.reference || `WD-${sessionPartnerId}-${Date.now()}`, // Reference/Invoice
+      TS: 2                         // Side (2=Withdrawal, from Appendix D)
+    };
+
+    // Submit to XValley via WebSocket
+    const topic = 'com.fxplayer.deposit';
+    const msg = {
+      MessageType: 100,
+      Username: data.username,
+      Messages: [withdrawalData]
+    };
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('XValley withdrawal request timeout (30s)'));
+      }, 30000);
+
+      wsSession.call(topic, [msg]).then(res => {
+        clearTimeout(timeout);
+        
+        // XValley response format: { MessageType: 200 (OK) or -3 (Error), Messages: [...] }
+        if (res && res.MessageType === 200) {
+          // Success - withdrawal pending admin approval
+          resolve({
+            success: true,
+            message: `Withdrawal request submitted. Your admin will review it shortly.`,
+            transactionId: data.reference || `WD-${sessionPartnerId}-${Date.now()}`,
+            status: 'Pending',
+            method: data.method
+          });
+        } else {
+          // Error response from XValley
+          const errorMsg = res?.Messages?.[0] || 'Unknown error from XValley';
+          resolve({
+            success: false,
+            message: `Withdrawal failed: ${errorMsg}`
+          });
+        }
+      }).catch(err => {
+        clearTimeout(timeout);
+        console.error('[submitWithdrawalRequest] XValley error:', err);
+        resolve({
+          success: false,
+          message: `Error submitting withdrawal to XValley: ${err.message}`
+        });
+      });
+    });
+  } catch (error) {
+    console.error('[submitWithdrawalRequest] Error:', error);
+    return {
+      success: false,
+      message: `Withdrawal error: ${error.message}`
+    };
+  }
 };
 
 export const fetchWithdrawalsHistory = async () => [];
@@ -2011,7 +2107,7 @@ const getAssetsLocal = () => {
  */
 export const sendNudgeEmail = async (recipientEmail, recipientName, referrerName, nudgeType, tier, partnerId) => {
   try {
-    const backendUrl = 'https://nommia-ib-backend.onrender.com';
+    const backendUrl = API_CONFIG.BACKEND_URL;
     
     console.log(`[Nudge] Sending ${nudgeType} email to ${recipientEmail}...`);
     console.log(`[Nudge] Recipient: ${recipientName}, Referrer: ${referrerName}, Tier: ${tier}`);
@@ -2127,7 +2223,7 @@ export const savePayoutDetails = async (payoutData) => {
 
     console.log('[Payouts] Saving payout details for partner:', partnerId);
 
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/save`, {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/save`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -2174,7 +2270,7 @@ export const getPayoutDetails = async () => {
 
     console.log('[Payouts] Fetching payout details for partner:', partnerId);
 
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${partnerId}`, {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/${partnerId}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json'
@@ -2209,7 +2305,7 @@ export const deletePayoutDetails = async () => {
 
     console.log('[Payouts] Deleting payout details for partner:', partnerId);
 
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${partnerId}`, {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/${partnerId}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json'
