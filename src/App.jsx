@@ -3474,11 +3474,11 @@ const SettingsView = () => {
                             </div>
                             <p className="text-sm text-neutral-400">Your unique QR code (generated just for you):</p>
                             {twoFAQRCode ? (
-                                <div className="bg-white p-3 w-56 h-56 mx-auto rounded-lg flex items-center justify-center">
+                                <div className="bg-white p-3 w-44 h-44 mx-auto rounded-lg flex items-center justify-center">
                                     <img src={twoFAQRCode} alt="2FA QR Code" className="w-full h-full object-contain" />
                                 </div>
                             ) : (
-                                <div className="w-56 h-56 mx-auto bg-neutral-800 rounded-lg flex items-center justify-center">
+                                <div className="w-44 h-44 mx-auto bg-neutral-800 rounded-lg flex items-center justify-center">
                                     <div className="text-center">
                                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500 mx-auto mb-2"></div>
                                         <p className="text-xs text-neutral-400">Generating your QR Code...</p>
