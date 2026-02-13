@@ -13,7 +13,6 @@ import autoTable from 'jspdf-autotable';
 
 // Import API functions - Using new clean V2 API
 import {
-  API_CONFIG,
   loginAndGetToken, 
   connectWebSocket, 
   fetchIBClients,
@@ -56,7 +55,14 @@ import {
   getAssetById,
   deleteAsset,
   sendNudgeEmail,
-  getNudgeHistory
+  getNudgeHistory,
+  sendOtp,
+  verifyOtp,
+  resetPasswordWithOtp,
+  updatePasswordXValley,
+  setup2FA,
+  verify2FA,
+  disable2FA
 } from './api_integration_v2';
 
 import Login from './Login';
@@ -3211,18 +3217,10 @@ const SettingsView = () => {
       setShowSecurityModal(true);
   };
 
-  // 3. Send OTP (Mock)
+  // 3. Send OTP
   const handleRequestOTP = async () => {
       try {
-          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                  email: profile.email,
-                  type: 'security'
-              })
-          });
-          const data = await res.json();
+          const data = await sendOtp(profile.email, 'security');
           if (data.success) {
               alert(`Security Code sent to ${profile.email}`);
               setOtpStep('verify');
@@ -3234,7 +3232,7 @@ const SettingsView = () => {
       }
   };
 
-  // 4. Verify & Execute Action (Fixed Function Name)
+  // 4. Verify & Execute Action
   const handleFinalVerification = async () => {
       if (otpInput.length < 6) return alert("Please enter a valid 6-digit OTP.");
 
@@ -3247,37 +3245,15 @@ const SettingsView = () => {
               if (oldPassword === newPassword) return alert("New password must be different from current password.");
 
               // Call backend password reset endpoint (verifies OTP + validates passwords)
-              const resetRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ 
-                      email: profile.email,
-                      oldPassword: oldPassword,
-                      newPassword: newPassword,
-                      code: otpInput
-                  })
-              });
-              const resetData = await resetRes.json();
+              const resetData = await resetPasswordWithOtp(profile.email, oldPassword, newPassword, otpInput);
               
               if (!resetData.success) {
                   return alert('Password reset failed: ' + resetData.message);
               }
 
               // OTP verified and password validated by backend. Now call XValley API directly
-              // Using the user's own authToken from login
               try {
-                  const xvalleyRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
-                      method: 'POST',
-                      headers: {
-                          'Content-Type': 'application/json',
-                          'Authorization': 'Bearer ' + localStorage.getItem('authToken')
-                      },
-                      body: JSON.stringify({
-                          OldPassword: oldPassword,
-                          NewPassword: newPassword,
-                          ConfirmPassword: newPassword
-                      })
-                  });
+                  const xvalleyRes = await updatePasswordXValley(oldPassword, newPassword);
                   
                   if (xvalleyRes.ok) {
                       alert("✅ Success: Password updated successfully. Please login again with your new password.");
@@ -3296,15 +3272,7 @@ const SettingsView = () => {
               }
           } else {
               // Save Payout Details Flow - Verify OTP first
-              const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ 
-                      email: profile.email,
-                      code: otpInput
-                  })
-              });
-              const verifyData = await verifyRes.json();
+              const verifyData = await verifyOtp(profile.email, otpInput);
               
               if (!verifyData.success) {
                   return alert('Invalid OTP: ' + verifyData.message);
@@ -3332,12 +3300,7 @@ const SettingsView = () => {
       if (isTwoFAEnabled) {
           if(window.confirm("Disable 2FA? You'll need to scan the QR code again to re-enable.")) {
               try {
-                  const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ username: currentUser })
-                  });
-                  const data = await res.json();
+                  const data = await disable2FA(currentUser);
                   if (data.success) {
                       setIsTwoFAEnabled(false);
                       alert("✅ 2FA Disabled");
@@ -3351,12 +3314,7 @@ const SettingsView = () => {
       } else {
           // Request 2FA setup - backend generates UNIQUE secret for this user
           try {
-              const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username: currentUser })
-              });
-              const data = await res.json();
+              const data = await setup2FA(currentUser);
               if (data.success) {
                   setTwoFASecret(data.secret);           // Store secret (e.g., JBSWY3DPEBPK3PXP...)
                   setTwoFAQRCode(data.qrCodeUrl);        // Store QR code image URL
@@ -3374,16 +3332,7 @@ const SettingsView = () => {
   const handleVerify2FA = async () => {
       if (twoFACode.length !== 6) return alert("❌ Invalid Code - must be 6 digits");
       try {
-          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  username: currentUser,
-                  secret: twoFASecret,
-                  token: twoFACode
-              })
-          });
-          const data = await res.json();
+          const data = await verify2FA(currentUser, twoFASecret, twoFACode);
           if (data.success) {
               setIsTwoFAEnabled(true);
               setShowTwoFAModal(false);
@@ -3649,15 +3598,7 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
 
     const handleRequestOTP = async () => {
         try {
-            const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    email: 'admin@nommia.io',
-                    type: 'admin'
-                })
-            });
-            const data = await res.json();
+            const data = await sendOtp('admin@nommia.io', 'admin');
             if (data.success) {
                 alert("OTP sent to admin email.");
                 setOtpStep('verify');
@@ -3678,15 +3619,7 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
 
         try {
             // Verify OTP
-            const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    email: 'admin@nommia.io',
-                    code: otpInput
-                })
-            });
-            const verifyData = await verifyRes.json();
+            const verifyData = await verifyOtp('admin@nommia.io', otpInput);
             
             if (!verifyData.success) {
                 return alert('Invalid OTP: ' + verifyData.message);

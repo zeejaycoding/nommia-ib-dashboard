@@ -10,7 +10,7 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 // All commissions are fetched directly from XValley (including metals, instruments, tier adjustments)
 // We do NOT calculate commissions locally - only add tier bonuses on top of XValley's value
 
-export const API_CONFIG = {
+const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
   BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   // Use the local Vite proxy in development, direct URL in production
@@ -2323,6 +2323,189 @@ export const deletePayoutDetails = async () => {
     return result;
   } catch (error) {
     console.error('[Payouts] Exception:', error);
+    throw error;
+  }
+};
+
+// ============= SECURITY API FUNCTIONS =============
+
+/**
+ * Send OTP to email address
+ * @param {string} email - Email address
+ * @param {string} type - Type of OTP (e.g., 'security', 'admin')
+ * @returns {Promise<object>} - { success: boolean, message?: string }
+ */
+export const sendOtp = async (email, type = 'security') => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        email,
+        type
+      })
+    });
+    const data = await response.json();
+    console.log(`[OTP] Send to ${email}:`, data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[OTP] Send error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Verify OTP code
+ * @param {string} email - Email address
+ * @param {string} code - 6-digit OTP code
+ * @returns {Promise<object>} - { success: boolean, message?: string }
+ */
+export const verifyOtp = async (email, code) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        email,
+        code
+      })
+    });
+    const data = await response.json();
+    console.log(`[OTP] Verify for ${email}:`, data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[OTP] Verify error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Reset password with OTP verification
+ * @param {string} email - User email
+ * @param {string} oldPassword - Current password
+ * @param {string} newPassword - New password
+ * @param {string} code - OTP code
+ * @returns {Promise<object>} - { success: boolean, message?: string }
+ */
+export const resetPasswordWithOtp = async (email, oldPassword, newPassword, code) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        email,
+        oldPassword,
+        newPassword,
+        code
+      })
+    });
+    const data = await response.json();
+    console.log('[Password] Reset with OTP:', data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[Password] Reset error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Update password in XValley API
+ * @param {string} oldPassword - Current password
+ * @param {string} newPassword - New password
+ * @returns {Promise<Response>} - XValley API response
+ */
+export const updatePasswordXValley = async (oldPassword, newPassword) => {
+  try {
+    const authToken = localStorage.getItem('authToken');
+    if (!authToken) {
+      throw new Error('Authentication token not found');
+    }
+
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
+        OldPassword: oldPassword,
+        NewPassword: newPassword,
+        ConfirmPassword: newPassword
+      })
+    });
+    console.log('[XValley] Password update:', response.ok ? '✅' : '❌');
+    return response;
+  } catch (error) {
+    console.error('[XValley] Password update error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Setup 2FA for a user
+ * @param {string} username - Username
+ * @returns {Promise<object>} - { success: boolean, secret?: string, qrCodeUrl?: string, message?: string }
+ */
+export const setup2FA = async (username) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await response.json();
+    console.log('[2FA] Setup for', username, ':', data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[2FA] Setup error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Verify 2FA code
+ * @param {string} username - Username
+ * @param {string} secret - TOTP secret
+ * @param {string} token - 6-digit TOTP code
+ * @returns {Promise<object>} - { success: boolean, message?: string }
+ */
+export const verify2FA = async (username, secret, token) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username,
+        secret,
+        token
+      })
+    });
+    const data = await response.json();
+    console.log('[2FA] Verify for', username, ':', data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[2FA] Verify error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Disable 2FA for a user
+ * @param {string} username - Username
+ * @returns {Promise<object>} - { success: boolean, message?: string }
+ */
+export const disable2FA = async (username) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await response.json();
+    console.log('[2FA] Disable for', username, ':', data.success ? '✅' : '❌');
+    return data;
+  } catch (error) {
+    console.error('[2FA] Disable error:', error);
     throw error;
   }
 };
