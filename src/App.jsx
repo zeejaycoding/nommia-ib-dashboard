@@ -13,6 +13,7 @@ import autoTable from 'jspdf-autotable';
 
 // Import API functions - Using new clean V2 API
 import {
+  API_CONFIG,
   loginAndGetToken, 
   connectWebSocket, 
   fetchIBClients,
@@ -55,14 +56,7 @@ import {
   getAssetById,
   deleteAsset,
   sendNudgeEmail,
-  getNudgeHistory,
-  sendOtp,
-  verifyOtp,
-  resetPasswordWithOtp,
-  updatePasswordXValley,
-  setup2FA,
-  verify2FA,
-  disable2FA
+  getNudgeHistory
 } from './api_integration_v2';
 
 import Login from './Login';
@@ -3217,30 +3211,30 @@ const SettingsView = () => {
       setShowSecurityModal(true);
   };
 
-  // 3. Send OTP
+  // 3. Send OTP (Mock)
   const handleRequestOTP = async () => {
       try {
-          // Validate email first
-          if (!profile.email || profile.email.trim() === '') {
-              alert('❌ Error: No email address found. Please log in again.');
-              return;
-          }
-
-          console.log('[Security] Requesting OTP for email:', profile.email);
-          const data = await sendOtp(profile.email, 'security');
-          
+          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                  email: profile.email,
+                  type: 'security'
+              })
+          });
+          const data = await res.json();
           if (data.success) {
-              alert(`✅ Security Code sent to ${profile.email}`);
+              alert(`Security Code sent to ${profile.email}`);
               setOtpStep('verify');
           } else {
-              alert('❌ Error: ' + (data.message || 'Failed to send OTP'));
+              alert('Error: ' + data.message);
           }
       } catch (error) {
-          alert('❌ Failed to send OTP: ' + error.message);
+          alert('Failed to send OTP: ' + error.message);
       }
   };
 
-  // 4. Verify & Execute Action
+  // 4. Verify & Execute Action (Fixed Function Name)
   const handleFinalVerification = async () => {
       if (otpInput.length < 6) return alert("Please enter a valid 6-digit OTP.");
 
@@ -3253,15 +3247,37 @@ const SettingsView = () => {
               if (oldPassword === newPassword) return alert("New password must be different from current password.");
 
               // Call backend password reset endpoint (verifies OTP + validates passwords)
-              const resetData = await resetPasswordWithOtp(profile.email, oldPassword, newPassword, otpInput);
+              const resetRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                      email: profile.email,
+                      oldPassword: oldPassword,
+                      newPassword: newPassword,
+                      code: otpInput
+                  })
+              });
+              const resetData = await resetRes.json();
               
               if (!resetData.success) {
                   return alert('Password reset failed: ' + resetData.message);
               }
 
               // OTP verified and password validated by backend. Now call XValley API directly
+              // Using the user's own authToken from login
               try {
-                  const xvalleyRes = await updatePasswordXValley(oldPassword, newPassword);
+                  const xvalleyRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
+                      method: 'POST',
+                      headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+                      },
+                      body: JSON.stringify({
+                          OldPassword: oldPassword,
+                          NewPassword: newPassword,
+                          ConfirmPassword: newPassword
+                      })
+                  });
                   
                   if (xvalleyRes.ok) {
                       alert("✅ Success: Password updated successfully. Please login again with your new password.");
@@ -3280,7 +3296,15 @@ const SettingsView = () => {
               }
           } else {
               // Save Payout Details Flow - Verify OTP first
-              const verifyData = await verifyOtp(profile.email, otpInput);
+              const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                      email: profile.email,
+                      code: otpInput
+                  })
+              });
+              const verifyData = await verifyRes.json();
               
               if (!verifyData.success) {
                   return alert('Invalid OTP: ' + verifyData.message);
@@ -3308,7 +3332,12 @@ const SettingsView = () => {
       if (isTwoFAEnabled) {
           if(window.confirm("Disable 2FA? You'll need to scan the QR code again to re-enable.")) {
               try {
-                  const data = await disable2FA(currentUser);
+                  const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ username: currentUser })
+                  });
+                  const data = await res.json();
                   if (data.success) {
                       setIsTwoFAEnabled(false);
                       alert("✅ 2FA Disabled");
@@ -3322,7 +3351,12 @@ const SettingsView = () => {
       } else {
           // Request 2FA setup - backend generates UNIQUE secret for this user
           try {
-              const data = await setup2FA(currentUser);
+              const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ username: currentUser })
+              });
+              const data = await res.json();
               if (data.success) {
                   setTwoFASecret(data.secret);           // Store secret (e.g., JBSWY3DPEBPK3PXP...)
                   setTwoFAQRCode(data.qrCodeUrl);        // Store QR code image URL
@@ -3340,7 +3374,16 @@ const SettingsView = () => {
   const handleVerify2FA = async () => {
       if (twoFACode.length !== 6) return alert("❌ Invalid Code - must be 6 digits");
       try {
-          const data = await verify2FA(currentUser, twoFASecret, twoFACode);
+          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  username: currentUser,
+                  secret: twoFASecret,
+                  token: twoFACode
+              })
+          });
+          const data = await res.json();
           if (data.success) {
               setIsTwoFAEnabled(true);
               setShowTwoFAModal(false);
@@ -3606,7 +3649,15 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
 
     const handleRequestOTP = async () => {
         try {
-            const data = await sendOtp('admin@nommia.io', 'admin');
+            const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    email: 'admin@nommia.io',
+                    type: 'admin'
+                })
+            });
+            const data = await res.json();
             if (data.success) {
                 alert("OTP sent to admin email.");
                 setOtpStep('verify');
@@ -3627,7 +3678,15 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
 
         try {
             // Verify OTP
-            const verifyData = await verifyOtp('admin@nommia.io', otpInput);
+            const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    email: 'admin@nommia.io',
+                    code: otpInput
+                })
+            });
+            const verifyData = await verifyRes.json();
             
             if (!verifyData.success) {
                 return alert('Invalid OTP: ' + verifyData.message);
@@ -3899,12 +3958,6 @@ export default function App() {
     setIsAuthenticated(true);
     setCurrentUser(username);
     localStorage.setItem('username', username);
-    // Set profile email based on username (username@nommia.io)
-    setProfile(prev => ({
-      ...prev,
-      name: username,
-      email: username ? `${username}@nommia.io` : ''
-    }));
     initAPI(token);
   };
 
@@ -3919,7 +3972,7 @@ export default function App() {
 
   const initAPI = async (token) => {
     try {
-      console.log("=== Initializing XValley Connection ===");
+    //  console.log("=== Initializing XValley Connection ===");
       setApiStatus('connecting');
       setIsLoadingClients(true);
       
@@ -3928,20 +3981,20 @@ export default function App() {
       
       // Step 2: Connect WebSocket and authenticate
       await connectWebSocket(token);
-      console.log("✅ WebSocket Connected");
+    //  console.log("✅ WebSocket Connected");
       
       // Step 3: Fetch complete client data (clients + trading accounts + trades)
-      console.log("Fetching complete client data...");
+    //  console.log("Fetching complete client data...");
       const clientData = await fetchCompleteClientData();
-      console.log(`✅ Loaded ${clientData.length} clients with full data`);
+    //  console.log(`✅ Loaded ${clientData.length} clients with full data`);
       
       setClients(clientData);
       setClientUsernames(clientData.map(c => c.username).filter(Boolean));      
       
       // Step 4: Fetch network stats for dashboard
-      console.log("Fetching network statistics...");
+    //  console.log("Fetching network statistics...");
       const stats = await fetchNetworkStats();
-      console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
+    //  console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
       
       setTotalVolume(stats.totalVolume);
       setRevenue(stats.totalRevenue);
@@ -3954,10 +4007,10 @@ export default function App() {
       
       setApiStatus('connected');
       setIsLoadingClients(false);
-      console.log("=== API Initialization Complete ===");
+    //  console.log("=== API Initialization Complete ===");
       
     } catch (error) {
-      console.error("API Connection Failed:", error);
+    //  console.error("API Connection Failed:", error);
       setApiStatus('error');
       setIsLoadingClients(false);
     }
