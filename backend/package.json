@@ -23,7 +23,8 @@
     "cors": "^2.8.5",
     "nodemailer": "^6.9.7",
     "dotenv": "^16.3.1",
-    "@supabase/supabase-js": "^2.38.0"
+    "@supabase/supabase-js": "^2.38.0",
+    "speakeasy": "^2.0.0"
   },
   "devDependencies": {},
   "engines": {

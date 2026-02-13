@@ -3471,48 +3471,48 @@ const SettingsView = () => {
 
         {/* --- 2FA SETUP MODAL --- */}
         {showTwoFAModal && (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6 text-center">
-                    <button onClick={() => setShowTwoFAModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
-                    <div className="mb-4 flex justify-center"><div className="p-3 bg-amber-500/10 rounded-full text-amber-500"><Shield size={32}/></div></div>
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+                <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6 text-center my-8 max-h-[90vh] overflow-y-auto">
+                    <button onClick={() => setShowTwoFAModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white z-10"><X size={20}/></button>
+                    <div className="mb-3 flex justify-center"><div className="p-3 bg-amber-500/10 rounded-full text-amber-500"><Shield size={32}/></div></div>
                     <h3 className="text-xl font-bold text-white mb-2">Set up 2FA</h3>
                     
                     {twoFAStep === 'scan' ? (
-                        <div className="space-y-6">
-                            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-sm text-blue-300">
+                        <div className="space-y-4">
+                            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2 text-sm text-blue-300">
                                 <p className="font-bold mb-1">📱 Step 1: Scan with Authenticator App</p>
                                 <p className="text-xs">Google Authenticator, Authy, Microsoft Authenticator, or any TOTP-compatible app</p>
                             </div>
                             <p className="text-sm text-neutral-400">Your unique QR code (generated just for you):</p>
                             {twoFAQRCode ? (
-                                <div className="bg-white p-3 w-44 h-44 mx-auto rounded-lg flex items-center justify-center">
-                                    <img src={twoFAQRCode} alt="2FA QR Code" className="w-full h-full object-contain" />
+                                <div className="bg-white p-2 w-40 h-40 mx-auto rounded-lg flex items-center justify-center">
+                                    <img src={twoFAQRCode} alt="2FA QR Code" className="w-full h-full object-contain" loading="eager" />
                                 </div>
                             ) : (
-                                <div className="w-44 h-44 mx-auto bg-neutral-800 rounded-lg flex items-center justify-center">
+                                <div className="w-40 h-40 mx-auto bg-neutral-800 rounded-lg flex items-center justify-center">
                                     <div className="text-center">
-                                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500 mx-auto mb-2"></div>
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500 mx-auto mb-1"></div>
                                         <p className="text-xs text-neutral-400">Generating your QR Code...</p>
                                     </div>
                                 </div>
                             )}
                             <div className="bg-neutral-950 rounded-lg p-3 border border-neutral-800">
-                                <p className="text-xs text-neutral-500 mb-1">Manual Entry (if QR scan fails):</p>
-                                <p className="text-sm font-mono text-emerald-400 break-all select-all">{twoFASecret}</p>
+                                <p className="text-xs text-neutral-500 mb-2">Manual Entry (if QR scan fails):</p>
+                                <p className="text-xs font-mono text-emerald-400 break-all select-all">{twoFASecret}</p>
                             </div>
-                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-sm text-amber-300">
+                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 text-sm text-amber-300">
                                 <p className="text-xs">⚠️ Save your secret key in a safe place as a backup recovery method</p>
                             </div>
-                            <button onClick={() => setTwoFAStep('verify')} className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg border border-neutral-700 transition-colors">✅ I have scanned the QR code</button>
+                            <button onClick={() => setTwoFAStep('verify')} className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg border border-neutral-700 transition-colors text-sm">✅ I have scanned the QR code</button>
                         </div>
                     ) : (
-                        <div className="space-y-6 animate-fadeIn">
-                            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 text-sm text-emerald-300">
+                        <div className="space-y-4 animate-fadeIn">
+                            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2 text-sm text-emerald-300">
                                 <p className="font-bold mb-1">🔢 Step 2: Verify Setup</p>
                                 <p className="text-xs">Enter the 6-digit code from your authenticator app (updates every 30 seconds)</p>
                             </div>
-                            <input type="text" placeholder="000000" maxLength="6" value={twoFACode} onChange={(e) => setTwoFACode(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-4 text-white text-center tracking-[0.5em] font-mono text-3xl outline-none focus:border-emerald-500" autoFocus />
-                            <button onClick={handleVerify2FA} className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-neutral-900 font-bold rounded-lg transition-colors">✅ Verify & Enable 2FA</button>
+                            <input type="text" placeholder="000000" maxLength="6" value={twoFACode} onChange={(e) => setTwoFACode(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white text-center tracking-[0.5em] font-mono text-2xl outline-none focus:border-emerald-500" autoFocus />
+                            <button onClick={handleVerify2FA} className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-neutral-900 font-bold rounded-lg transition-colors text-sm">✅ Verify & Enable 2FA</button>
                         </div>
                     )}
                 </div>

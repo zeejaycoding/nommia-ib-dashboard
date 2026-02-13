@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
+const speakeasy = require('speakeasy');
 require('dotenv').config();
 
 // ============= EARLY STARTUP LOGGING =============
@@ -697,16 +698,50 @@ app.post('/api/2fa/setup', async (req, res) => {
     if (!username) {
       return res.status(400).json({ success: false, message: 'Username required' });
     }
-    const secret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
     
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=otpauth://totp/Nommia:${username}?secret=${secret}&issuer=Nommia`;
+    // Generate a real TOTP secret using speakeasy
+    const secret = speakeasy.generateSecret({
+      name: `Nommia (${username})`,
+      issuer: 'Nommia',
+      length: 32
+    });
+    
+    // Generate QR code URL - encode the secret properly
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
+      `otpauth://totp/Nommia:${username}?secret=${secret.base32}&issuer=Nommia`
+    )}`;
     
     console.log(`[2FA] Setup initiated for user: ${username}`);
-    console.log(`[2FA] Secret (store this securely): ${secret}`);
+    console.log(`[2FA] Secret: ${secret.base32}`);
+    console.log(`[2FA] QR URL generated: ${qrCodeUrl.substring(0, 80)}...`);
+    
+    // Save to database (not enabled yet - will be enabled after verification)
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('user_2fa')
+          .upsert({
+            username: username,
+            secret: secret.base32,
+            enabled: false,  // Not enabled until verified
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'username' });
+        
+        if (error) {
+          console.warn(`[2FA] Warning saving to DB: ${error.message}`);
+          // Don't fail - still return the secret to user
+        } else {
+          console.log(`[2FA] Secret saved to database for ${username}`);
+        }
+      } catch (dbErr) {
+        console.warn(`[2FA] Database error: ${dbErr.message}`);
+        // Continue anyway
+      }
+    }
     
     res.status(200).json({
       success: true,
-      secret: secret,
+      secret: secret.base32,
       qrCodeUrl: qrCodeUrl,
       message: 'Secret generated. Scan QR code with authenticator app.'
     });
@@ -721,7 +756,7 @@ app.post('/api/2fa/setup', async (req, res) => {
 
 /**
  * POST /api/2fa/verify
- * Verify 6-digit TOTP code
+ * Verify 6-digit TOTP code and enable 2FA
  * Returns: { success, message }
  */
 app.post('/api/2fa/verify', async (req, res) => {
@@ -735,7 +770,45 @@ app.post('/api/2fa/verify', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid token format' });
     }
     
-    console.log(`[2FA] Verified for user: ${username}`);
+    // Verify the TOTP code
+    const verified = speakeasy.totp.verify({
+      secret: secret,
+      encoding: 'base32',
+      token: token,
+      window: 2  // Allow 30 seconds before/after
+    });
+    
+    if (!verified) {
+      console.log(`[2FA] Verification failed for user: ${username} - invalid code`);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid authenticator code. Check your app and try again.' 
+      });
+    }
+    
+    // Code is valid - enable 2FA in database
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('user_2fa')
+          .update({
+            enabled: true,  // Enable 2FA now that code is verified
+            updated_at: new Date().toISOString()
+          })
+          .eq('username', username);
+        
+        if (error) {
+          console.warn(`[2FA] Warning enabling in DB: ${error.message}`);
+          // Still return success to user
+        } else {
+          console.log(`[2FA] 2FA enabled for user: ${username}`);
+        }
+      } catch (dbErr) {
+        console.warn(`[2FA] Database error enabling: ${dbErr.message}`);
+      }
+    }
+    
+    console.log(`[2FA] Verified and enabled for user: ${username}`);
     
     res.status(200).json({
       success: true,
@@ -758,12 +831,54 @@ app.post('/api/2fa/verify-login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing username or token' });
     }
 
-    
     if (!/^\d{6}$/.test(token)) {
       return res.status(400).json({ success: false, message: 'Invalid token' });
     }
     
-    console.log(`[2FA Login] Verified for user: ${username}`);
+    // Fetch the secret from database
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: '2FA service unavailable' });
+    }
+    
+    const { data, error } = await supabase
+      .from('user_2fa')
+      .select('secret, enabled')
+      .eq('username', username)
+      .single();
+    
+    if (error || !data) {
+      console.warn(`[2FA Login] User not found or 2FA not enabled: ${username}`);
+      return res.status(401).json({ 
+        success: false, 
+        message: '2FA not enabled for this account' 
+      });
+    }
+    
+    if (!data.enabled) {
+      console.warn(`[2FA Login] 2FA is disabled for user: ${username}`);
+      return res.status(401).json({ 
+        success: false, 
+        message: '2FA is not enabled for this account' 
+      });
+    }
+    
+    // Verify the token against the stored secret
+    const verified = speakeasy.totp.verify({
+      secret: data.secret,
+      encoding: 'base32',
+      token: token,
+      window: 2
+    });
+    
+    if (!verified) {
+      console.log(`[2FA Login] Invalid code for user: ${username}`);
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid authenticator code.' 
+      });
+    }
+    
+    console.log(`[2FA Login] Verified successfully for user: ${username}`);
     
     res.status(200).json({
       success: true,
@@ -791,13 +906,24 @@ app.post('/api/2fa/disable', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Username required' });
     }
 
-    // Delete from database:
-    // await supabase
-    //   .from('user_2fa')
-    //   .delete()
-    //   .eq('username', username);
-    
-    console.log(`[2FA] Disabled for user: ${username}`);
+    // Delete from database
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('user_2fa')
+          .delete()
+          .eq('username', username);
+        
+        if (error) {
+          console.warn(`[2FA] Warning disabling: ${error.message}`);
+          // Still return success
+        } else {
+          console.log(`[2FA] Disabled for user: ${username}`);
+        }
+      } catch (dbErr) {
+        console.warn(`[2FA] Database error disabling: ${dbErr.message}`);
+      }
+    }
     
     res.status(200).json({
       success: true,
@@ -808,6 +934,45 @@ app.post('/api/2fa/disable', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to disable 2FA: ' + err.message
+    });
+  }
+});
+
+/**
+ * GET /api/2fa/check
+ * Check if 2FA is enabled for a user
+ * Returns: { success, enabled }
+ */
+app.post('/api/2fa/check', async (req, res) => {
+  try {
+    const { username } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({ success: false, message: 'Username required' });
+    }
+
+    if (!supabase) {
+      return res.status(200).json({ success: true, enabled: false, message: '2FA service unavailable' });
+    }
+    
+    const { data, error } = await supabase
+      .from('user_2fa')
+      .select('enabled')
+      .eq('username', username)
+      .single();
+    
+    const is2FAEnabled = data && data.enabled === true;
+    console.log(`[2FA Check] User ${username} - 2FA enabled: ${is2FAEnabled}`);
+    
+    res.status(200).json({
+      success: true,
+      enabled: is2FAEnabled
+    });
+  } catch (err) {
+    console.warn(`[2FA Check] Error: ${err.message}`);
+    res.status(200).json({
+      success: true,
+      enabled: false  // Fail open - don't require 2FA if there's an error
     });
   }
 });
