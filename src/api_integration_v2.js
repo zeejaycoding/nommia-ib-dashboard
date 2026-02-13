@@ -10,7 +10,7 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 // All commissions are fetched directly from XValley (including metals, instruments, tier adjustments)
 // We do NOT calculate commissions locally - only add tier bonuses on top of XValley's value
 
-const API_CONFIG = {
+export const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
   // Use the local Vite proxy in development, direct URL in production
   WS_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
@@ -219,6 +219,8 @@ export const disconnectWebSocket = () => {
 };
 
 export const getSessionPartnerId = () => sessionPartnerId;
+
+export const getSessionUsername = () => wsSessionId;
 
 /**
  * Fetch ALL leads/clients from the platform for network building
@@ -2240,6 +2242,111 @@ const getAssetsLocal = () => {
   } catch (error) {
     console.error('[Assets] Error reading assets from localStorage:', error);
     return [];
+  }
+};
+
+// ============= NUDGE EMAIL =============
+export const sendNudgeEmail = async (recipientEmail, partnerName, referrerName, nudgeType, tier, partnerId) => {
+  try {
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/nudges/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientEmail,
+        partnerName,
+        referrerName,
+        nudgeType,
+        tier,
+        partnerId
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      return { success: false, error: errorData.error || 'Failed to send nudge' };
+    }
+    
+    const data = await response.json();
+    return { success: true, messageId: data.messageId };
+  } catch (error) {
+    console.error('[Nudge] Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const getNudgeHistory = async () => {
+  try {
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/nudges/history`);
+    if (!response.ok) throw new Error('Failed to fetch nudge history');
+    return await response.json();
+  } catch (error) {
+    console.error('[Nudge History] Error:', error);
+    return [];
+  }
+};
+
+// ============= PAYOUT DETAILS =============
+export const savePayoutDetails = async (paymentDetails) => {
+  try {
+    const partnerId = getSessionPartnerId() || paymentDetails.partnerId;
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...paymentDetails,
+        partnerId
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to save payout details');
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('[Payouts] Error saving:', error);
+    throw error;
+  }
+};
+
+export const getPayoutDetails = async (partnerId = null) => {
+  try {
+    const id = partnerId || getSessionPartnerId();
+    if (!id) throw new Error('No partner ID available');
+    
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${id}`);
+    
+    if (!response.ok) {
+      if (response.status === 404) return null;
+      throw new Error('Failed to fetch payout details');
+    }
+    
+    const data = await response.json();
+    return data.data || null;
+  } catch (error) {
+    console.error('[Payouts] Error fetching:', error);
+    return null;
+  }
+};
+
+export const deletePayoutDetails = async (partnerId = null) => {
+  try {
+    const id = partnerId || getSessionPartnerId();
+    if (!id) throw new Error('No partner ID available');
+    
+    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${id}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) throw new Error('Failed to delete payout details');
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('[Payouts] Error deleting:', error);
+    throw error;
   }
 };
 
