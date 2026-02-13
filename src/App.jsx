@@ -3194,7 +3194,6 @@ const SettingsView = () => {
   const [twoFAQRCode, setTwoFAQRCode] = useState('');          // QR code image URL
   const [showTwoFALoginModal, setShowTwoFALoginModal] = useState(false); // Login 2FA prompt
   const [twoFALoginCode, setTwoFALoginCode] = useState('');    // Code entered at login
-    const [currentUser, setCurrentUser] = useState(null);
 
 
   // --- Handlers ---
@@ -3331,13 +3330,19 @@ const SettingsView = () => {
 
   // --- 2FA Handlers (Real TOTP Implementation) ---
   const handleToggle2FA = async () => {
+      const username = localStorage.getItem('username');
+      if (!username) {
+          alert("Error: Username not found. Please login again.");
+          return;
+      }
+      
       if (isTwoFAEnabled) {
           if(window.confirm("Disable 2FA? You'll need to scan the QR code again to re-enable.")) {
               try {
                   const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ username: currentUser })
+                      body: JSON.stringify({ username: username })
                   });
                   const data = await res.json();
                   if (data.success) {
@@ -3356,7 +3361,7 @@ const SettingsView = () => {
               const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username: currentUser })
+                  body: JSON.stringify({ username: username })
               });
               const data = await res.json();
               if (data.success) {
@@ -3375,12 +3380,18 @@ const SettingsView = () => {
 
   const handleVerify2FA = async () => {
       if (twoFACode.length !== 6) return alert("❌ Invalid Code - must be 6 digits");
+      const username = localStorage.getItem('username');
+      if (!username) {
+          alert("Error: Username not found. Please login again.");
+          return;
+      }
+      
       try {
           const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                  username: currentUser,
+                  username: username,
                   secret: twoFASecret,
                   token: twoFACode
               })
