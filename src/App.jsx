@@ -3194,7 +3194,42 @@ const SettingsView = () => {
   const [twoFAQRCode, setTwoFAQRCode] = useState('');          // QR code image URL
   const [showTwoFALoginModal, setShowTwoFALoginModal] = useState(false); // Login 2FA prompt
   const [twoFALoginCode, setTwoFALoginCode] = useState('');    // Code entered at login
+  const [isLoading2FA, setIsLoading2FA] = useState(true);      // Loading state
 
+  // --- Fetch 2FA status on component mount ---
+  useEffect(() => {
+    const fetchTwoFAStatus = async () => {
+      try {
+        const username = localStorage.getItem('username');
+        if (!username) {
+          setIsLoading2FA(false);
+          return;
+        }
+
+        const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username })
+        });
+        
+        const data = await res.json();
+        if (data.success) {
+          setIsTwoFAEnabled(data.enabled || false);
+          // Cache in localStorage
+          localStorage.setItem('twoFAEnabled', data.enabled ? 'true' : 'false');
+        }
+      } catch (err) {
+        console.warn('[2FA Check] Error fetching status:', err.message);
+        // Try to restore from cache
+        const cached = localStorage.getItem('twoFAEnabled');
+        setIsTwoFAEnabled(cached === 'true');
+      } finally {
+        setIsLoading2FA(false);
+      }
+    };
+
+    fetchTwoFAStatus();
+  }, []); // Run only once on mount
 
   // --- Handlers ---
 
@@ -3347,6 +3382,7 @@ const SettingsView = () => {
                   const data = await res.json();
                   if (data.success) {
                       setIsTwoFAEnabled(false);
+                      localStorage.setItem('twoFAEnabled', 'false');  // Cache it
                       alert("✅ 2FA Disabled");
                   } else {
                       alert("Error: " + data.message);
@@ -3399,6 +3435,7 @@ const SettingsView = () => {
           const data = await res.json();
           if (data.success) {
               setIsTwoFAEnabled(true);
+              localStorage.setItem('twoFAEnabled', 'true');  // Cache it
               setShowTwoFAModal(false);
               setTwoFACode('');
               setTwoFASecret('');
@@ -3569,10 +3606,11 @@ const SettingsView = () => {
                             <div className="text-sm font-bold text-white flex items-center">
                                 Two-Factor Authentication
                                 {isTwoFAEnabled && <span className="ml-2 px-2 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] rounded border border-emerald-500/20">Enabled</span>}
+                                {isLoading2FA && <span className="ml-2 text-[10px] text-neutral-400 animate-pulse">Loading...</span>}
                             </div>
                             <p className="text-xs text-neutral-500 mt-1">Secure account with Authenticator app.</p>
                         </div>
-                        <div onClick={handleToggle2FA} className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${isTwoFAEnabled ? 'bg-emerald-500' : 'bg-neutral-700'}`}>
+                        <div onClick={() => !isLoading2FA && handleToggle2FA()} className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${isLoading2FA ? 'bg-neutral-600 opacity-50 cursor-not-allowed' : (isTwoFAEnabled ? 'bg-emerald-500' : 'bg-neutral-700')}`}>
                             <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${isTwoFAEnabled ? 'left-7' : 'left-1'}`}></div>
                         </div>
                     </div>
