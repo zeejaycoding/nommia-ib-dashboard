@@ -13,6 +13,7 @@ import autoTable from 'jspdf-autotable';
 
 // Import API functions - Using new clean V2 API
 import {
+  API_CONFIG,
   loginAndGetToken, 
   connectWebSocket, 
   fetchIBClients,

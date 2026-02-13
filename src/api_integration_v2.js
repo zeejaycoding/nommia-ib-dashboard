@@ -10,7 +10,7 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 // All commissions are fetched directly from XValley (including metals, instruments, tier adjustments)
 // We do NOT calculate commissions locally - only add tier bonuses on top of XValley's value
 
-const API_CONFIG = {
+export const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
   BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   // Use the local Vite proxy in development, direct URL in production
