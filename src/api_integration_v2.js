@@ -10,9 +10,8 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 // All commissions are fetched directly from XValley (including metals, instruments, tier adjustments)
 // We do NOT calculate commissions locally - only add tier bonuses on top of XValley's value
 
-export const API_CONFIG = {
+const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
-  BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   // Use the local Vite proxy in development, direct URL in production
   WS_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
   REALM: "fxplayer",
@@ -87,11 +86,7 @@ export const loginAndGetToken = async (username, password) => {
     
     // XValley returns refresh_token from /token endpoint
     authToken = data.refresh_token || data.refreshToken || data.token || data.access_token;
-    // Store in localStorage for password reset endpoint
-    if (authToken) {
-      localStorage.setItem('authToken', authToken);
-    }
-    //console.log("Auth token obtained:", authToken ? "Yes" : "No");
+    console.log("Auth token obtained:", authToken ? "Yes" : "No");
     return authToken;
   } catch (error) {
     console.error("Login Error:", error);
@@ -120,7 +115,7 @@ export const fetchServerConfig = async () => {
     // Update WS_URL if we got AdminServer from config (only in production)
     if (!import.meta.env.DEV && serverConfig.AdminServer) {
       API_CONFIG.WS_URL = serverConfig.AdminServer.url;
-     // console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
+      console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
     }
     return serverConfig;
   } catch (e) {
@@ -139,24 +134,27 @@ export const connectWebSocket = (token) => {
     wsConnection = new autobahn.Connection({
       url: API_CONFIG.WS_URL,
       realm: API_CONFIG.REALM,
-      max_retries: 5,
+      autoreconnect: true,
+      max_retries: 15,
+      max_retry_delay: 30,
       retry_delay_initial: 1,
-      retry_delay_max: 10
+      retry_delay_max: 30,
+      retry_delay_growth: 1.5
     });
 
     wsConnection.onopen = async (session) => {
-      //console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
+      console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
       wsSession = session;
       
       try {
         // PING to authenticate
         const pingMsg = JSON.stringify({ token: authToken, host: API_CONFIG.BROKER_HOST });
-       // console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
+        console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
         
         const result = await session.call(API_CONFIG.TOPICS.PING, [pingMsg]);
         const data = typeof result === 'string' ? JSON.parse(result) : result;
         
-        //console.log("PING Response:", JSON.stringify(data, null, 2));
+        console.log("PING Response:", JSON.stringify(data, null, 2));
         
         if (data.MessageType === -3) {
           console.error("Auth Error:", data.Messages);
@@ -170,28 +168,28 @@ export const connectWebSocket = (token) => {
         // Messages[3] = PartnerId as string (e.g., "36")
         // Messages[4] = CompanyId as string (e.g., "5")
         wsSessionId = data.Messages?.[0] || null;
-        //console.log("Session ID (username):", wsSessionId);
-        //console.log("Roles:", data.Messages?.[1]);
+        console.log("Session ID (username):", wsSessionId);
+        console.log("Roles:", data.Messages?.[1]);
         
         // PartnerId is at Messages[3] as a string
         const partnerIdStr = data.Messages?.[3];
         if (partnerIdStr) {
           sessionPartnerId = parseInt(partnerIdStr, 10);
-        //  console.log("Extracted PartnerId:", sessionPartnerId);
+          console.log("Extracted PartnerId:", sessionPartnerId);
         }
         
         // CompanyId is at Messages[4] as a string
         const companyIdStr = data.Messages?.[4];
         if (companyIdStr) {
           sessionCompanyId = parseInt(companyIdStr, 10);
-         // console.log("Extracted CompanyId:", sessionCompanyId);
+          console.log("Extracted CompanyId:", sessionCompanyId);
         }
         
         if (!sessionPartnerId) {
-        //  console.warn("No PartnerId found in PING response - this IB may not have partner access");
+          console.warn("No PartnerId found in PING response - this IB may not have partner access");
         }
         
-        //console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
+        console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
         resolve(session);
       } catch (err) {
         console.error("PING Error:", err);
@@ -201,7 +199,13 @@ export const connectWebSocket = (token) => {
 
     wsConnection.onclose = (reason) => {
       console.log("WebSocket Closed:", reason);
+      console.log("Will attempt to reconnect...");
       wsSession = null;
+      // Don't set wsConnection to null - let autobahn handle reconnection
+    };
+
+    wsConnection.onerror = (error) => {
+      console.error("WebSocket Error:", error);
     };
 
     wsConnection.open();
@@ -215,7 +219,6 @@ export const disconnectWebSocket = () => {
 };
 
 export const getSessionPartnerId = () => sessionPartnerId;
-export const getSessionUsername = () => wsSessionId;  // Returns current user's username from WebSocket
 
 /**
  * Fetch ALL leads/clients from the platform for network building
@@ -238,20 +241,20 @@ export const fetchAllLeads = async (pageSize = 5000) => {
       AdminType: 2  // 2 = Customers/Leads
     };
     
-   // console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
+    console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
     const wrapper = data?.Messages?.[0];
     const clients = wrapper?.Messages || [];
     
-    //console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`);
+    console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`);
     
     // Log sample clients with referrer data
     if (clients.length > 0) {
-     // console.log("[fetchAllLeads] Sample clients with referrer info:");
+      console.log("[fetchAllLeads] Sample clients with referrer info:");
       clients.slice(0, 5).forEach((c, idx) => {
-        //console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
+        console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
       });
     }
     
@@ -299,18 +302,27 @@ export const fetchAllLeads = async (pageSize = 5000) => {
   }
 };
 
+// ============= CORE DATA FETCHING =============
+
+/**
+ * Fetch all leads/customers from leads endpoint
+ * Uses AdminType 2 for customers (per docs p8-9)
+ * Returns: Registration, Email, UserName, LastLogin, Approved, ApprovedDate, Status, StatusString, etc.
+ */
 export const fetchIBClients = async (usernames = []) => {
   if (!wsSession) throw new Error("Not connected");
   
- // console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
+  console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
   
+  // Add CompanyId filter per API docs (p7-9): correct format is Filter, FilterComparison, FilterType, FilterValueType
+  // This is critical to prevent loading customers from all companies
   const filters = [];
   if (sessionCompanyId) {
     filters.push({
       Filter: String(sessionCompanyId),        // value to filter
-      FilterComparison: 1,                      // 1 = NumberEquals 
+      FilterComparison: 1,                      // 1 = NumberEquals (per docs p7)
       FilterType: "CompanyId",                  // column name
-      FilterValueType: 2                        // 2 = Number 
+      FilterValueType: 2                        // 2 = Number (per docs p7)
     });
   }
   
@@ -320,22 +332,23 @@ export const fetchIBClients = async (usernames = []) => {
     PageSize: 500,
     Sort: "Registration desc",
     Skip: 0,
-    AdminType: 2  // 2 = Customers 
+    AdminType: 2  // 2 = Customers (per docs p8)
   };
   
- // console.log("Leads request:", JSON.stringify(msg, null, 2));
+  console.log("Leads request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
+  // Response structure: { Messages: [{ AdminType, Messages: [...actual clients...], Total }] }
   const wrapper = data?.Messages?.[0];
   const clients = wrapper?.Messages || [];
   
   if (!clients.length) {
-  //  console.log("No clients found - Response:", JSON.stringify(data, null, 2));
+    console.log("No clients found - Response:", JSON.stringify(data, null, 2));
     return [];
   }
   
- // console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`);
+  console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`);
   
   // Filter by usernames if provided
   let filteredClients = clients;
@@ -345,9 +358,16 @@ export const fetchIBClients = async (usernames = []) => {
       const username = (c.UserName || c.A || '').toLowerCase();
       return usernameSet.has(username);
     });
-  //  console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
+    console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
   }
-    
+  
+  // Log first client to see field names
+  if (filteredClients[0]) {
+    console.log("Sample client data:", JSON.stringify(filteredClients[0], null, 2));
+  }
+  
+  // Map to client objects with all fields from docs (p8-9)
+  // Includes: Approved, ApprovedDate, Status, StatusString, LastLogin for KYC/activity
   return filteredClients.map(lead => {
     // Determine KYC status from Approved field (docs p9)
     const isApproved = lead.Approved === true;
@@ -399,12 +419,18 @@ export const fetchIBClients = async (usernames = []) => {
   });
 };
 
+/**
+ * Fetch ALL clients in Nommia company (no partner filter) for network tree building
+ * Uses trading accounts endpoint to get tier 1, 2, 3 across all partners
+ * Aggregates financial data (deposits, volume, equity) for display
+ */
 export const fetchAllClientsForNetwork = async () => {
   if (!wsSession) throw new Error("Not connected");
   
-  //console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
+  console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
   
   try {
+    // Step 1: Fetch all trading account (REAL ONLY - AccountType: "1")
     const msg = {
       MessageType: 100,
       Filters: [],
@@ -426,8 +452,9 @@ export const fetchAllClientsForNetwork = async () => {
       return [];
     }
     
-    //console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
+    console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
     
+    // Step 2: Group accounts by trader and aggregate financial data
     const clientMap = {};
     
     accounts.forEach(acc => {
@@ -448,6 +475,7 @@ export const fetchAllClientsForNetwork = async () => {
           kycStatus: trader.Approved === true ? 'Approved' : 'Pending',
           status: 'Active',
           
+          // Financial data (aggregated from trading accounts)
           deposit: 0,
           equity: 0,
           balance: 0,
@@ -460,6 +488,7 @@ export const fetchAllClientsForNetwork = async () => {
         };
       }
       
+      // Aggregate from REAL accounts only
       if (isRealAccount) {
         clientMap[username].deposit += (acc.DepositsAmount || 0);
         clientMap[username].equity += (acc.E || 0);
@@ -467,7 +496,8 @@ export const fetchAllClientsForNetwork = async () => {
       }
     });
     
-    //console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
+    // Step 3: Get closed trades for volume and commission
+    console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
     
     const tradesMsg = {
       MessageType: 100,
@@ -487,8 +517,9 @@ export const fetchAllClientsForNetwork = async () => {
     const tradesWrapper = tradesData?.Messages?.[0];
     const trades = tradesWrapper?.Messages || [];
     
-    //console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
+    console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
     
+    // Group trades by username and aggregate
     const tradesByUsername = {};
     trades.forEach(t => {
       const username = t.TA?.T?.A || t.username;
@@ -505,6 +536,7 @@ export const fetchAllClientsForNetwork = async () => {
       tradesByUsername[username].count++;
     });
     
+    // Apply trade data to clients
     Object.keys(clientMap).forEach(username => {
       const tradeData = tradesByUsername[username];
       if (tradeData) {
@@ -514,11 +546,16 @@ export const fetchAllClientsForNetwork = async () => {
     });
     
     const allClients = Object.values(clientMap);
-   // console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
+    console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
     
+    // Log samples
+    const samples = allClients.slice(0, 5);
+    samples.forEach((c, idx) => {
+      console.log(`Sample client ${idx + 1}: ${c.username}, partnerId=${c.partnerId}, deposit=$${c.deposit}, volume=${c.volume}, kyc=${c.kycStatus}`);
+    });
     
     // Debug: Log full raw trader data for first few clients to understand available fields
-   // console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
+    console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
     samples.forEach((c, idx) => {
       const raw = c._raw;
       if (raw) {
@@ -551,8 +588,11 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
   if (!wsSession) throw new Error("Not connected");
   
   const pid = partnerId || sessionPartnerId;
-  // console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
+  console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
   
+  // Note: T.PartnerId filter doesn't work server-side
+  // Fetch all account types (12 = real + demo) and filter client-side
+  // We need both to check for real accounts (TATD.Type === 1)
   const msg = {
     MessageType: 100,
     Filters: [],
@@ -563,10 +603,11 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
     Skip: 0
   };
   
-  // console.log("Traders request:", JSON.stringify(msg, null, 2));
+  console.log("Traders request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
+  // Response structure: { Messages: [{ AdminType, Messages: [...actual accounts...], Total }] }
   const wrapper = data?.Messages?.[0];
   const accounts = wrapper?.Messages || [];
   
@@ -575,13 +616,13 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
     return [];
   }
   
-  //console.log(`Found ${accounts.length} trading accounts (Total: ${wrapper?.Total || 'N/A'})`);
+  console.log(`Found ${accounts.length} trading accounts (Total: ${wrapper?.Total || 'N/A'})`);
   
   // Filter by PartnerId client-side
   let filteredAccounts = accounts;
   if (pid) {
     filteredAccounts = accounts.filter(acc => acc.T?.PartnerId === pid);
-   // console.log(`Filtered to ${filteredAccounts.length} accounts for PartnerId ${pid}`);
+    console.log(`Filtered to ${filteredAccounts.length} accounts for PartnerId ${pid}`);
   }
   
   // Log first account to see field structure
@@ -625,7 +666,12 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
   try {
     const pid = partnerId || sessionPartnerId;
     
+    // Note: Can't filter by TA.T.PartnerId (doesn't exist)
+    // Filter by TraderAccountId if we have specific accounts, otherwise fetch all
     const filters = [];
+    
+    // If we have account IDs, we could filter by them (but may need multiple calls)
+    // For now, fetch all and filter client-side by partnerId
     
     const msg = {
       MessageType: 100,
@@ -639,11 +685,12 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       Skip: 0
     };
     
-   // console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-    // console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
+    console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
+    console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
+    // Response structure: { Messages: [{ AdminType, Messages: [...actual trades...], Total }] }
     const wrapper = data?.Messages?.[0];
     const trades = wrapper?.Messages || [];
     
@@ -652,12 +699,13 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       return [];
     }
     
-   // console.log(`[fetchClosedTradesBulk] Found ${trades.length} closed trades total (Total: ${wrapper?.Total || 'N/A'})`);
+    console.log(`[fetchClosedTradesBulk] Found ${trades.length} closed trades total (Total: ${wrapper?.Total || 'N/A'})`);
     
+    // Filter trades by partnerId if specified
     let filteredTrades = trades;
     if (pid) {
       filteredTrades = trades.filter(t => t.TA?.T?.PartnerId === pid);
-      // console.log(`[fetchClosedTradesBulk] Filtered to ${filteredTrades.length} trades for PartnerId ${pid}`);
+      console.log(`[fetchClosedTradesBulk] Filtered to ${filteredTrades.length} trades for PartnerId ${pid}`);
     }
         
     return filteredTrades.map(t => ({
@@ -671,7 +719,7 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       openPrice: t.EP || 0,
       closePrice: t.CEP || 0,
       profitLoss: parseFloat(t.PL) || 0,
-      commission: parseFloat(t.Commission) || 0,  
+      commission: parseFloat(t.Commission) || 0,  // ← Direct from XValley, not calculated
       openDate: t.EDT,
       closeDate: t.CEDT,
       partnerId: t.TA?.T?.PartnerId,
@@ -680,7 +728,7 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
     
     
   } catch (error) {
-    //console.error("[fetchClosedTradesBulk] API call unsuccessful:", error.message);
+    console.error("[fetchClosedTradesBulk] API call unsuccessful:", error.message);
     return [];
   }
 };
@@ -697,6 +745,9 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   try {
     const pid = partnerId || sessionPartnerId;
     
+    // Build the request - AdminType 100 = Transactions
+    // Add CompanyId filter per API docs (p7-9): correct format is Filter, FilterComparison, FilterType, FilterValueType
+    // CompanyId = 5 (Nommia) is the correct filter field for transactions
     const filters = [];
     if (sessionCompanyId) {
       filters.push({
@@ -719,8 +770,8 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     Skip: 0
   };
   
-  // console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-  // console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
+  console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
+  console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
   const result = await wsSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -733,16 +784,55 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     return [];
   }
   
-  // console.log(`[fetchTransactionsBulk] Found ${transactions.length} transactions (Total: ${wrapper?.Total || 'N/A'})`);
+  console.log(`[fetchTransactionsBulk] Found ${transactions.length} transactions (Total: ${wrapper?.Total || 'N/A'})`);
   
+  // Log first transaction to understand structure
+  if (transactions[0]) {
+    const t = transactions[0];
+    console.log("[fetchTransactionsBulk] Sample transaction fields:", Object.keys(t));
+    console.log("[fetchTransactionsBulk] Sample transaction data:", {
+      Id: t.Id,
+      DA: t.DA,  // Deposit Amount (reference)
+      AA: t.AA,  // Account Amount (actual deposit)
+      SA: t.SA,  // Send Amount
+      TS: t.TS,  // Transaction Side
+      D: t.D,    // Date
+      IsFiat: t.IsFiat,  // Is Fiat transaction
+      'T.Name': t.T?.Name,  // Provider name
+      'TA.T': t.TA?.T,  // Trader info
+      'TrA.T': t.TrA?.T  // Alternative trader info
+    });
+  }
   
+  // Calculate totals before filtering
   const totalAmount = transactions.reduce((sum, t) => sum + (t.AA || t.Amount || 0), 0);
-  //console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
+  console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
   
+  // Map transactions - handle various field name formats
+  // Per XValley docs: AA = Deposited amount (Account Amount), DA = Reference amount
+  // Debug first transaction to see all field values
+  if (transactions[0]) {
+    console.log("[fetchTransactionsBulk] First transaction fields DEBUG:", {
+      Id: transactions[0].Id,
+      TS: transactions[0].TS,  // Side
+      TSN: transactions[0].TSN,  // Type name
+      D: transactions[0].D,  // Date
+      DA: transactions[0].DA,  // Deposit Amount
+      AA: transactions[0].AA,  // Account Amount
+      SA: transactions[0].SA,  // Send Amount
+      'T.Name': transactions[0].T?.Name,  // Provider
+      IsFiat: transactions[0].IsFiat,  // Is Fiat
+      Reason: transactions[0].Reason  // Reason code
+    });
+  }
   
   const mapped = transactions.map(t => {
+    // Get username from nested structures - try multiple paths
+    // TrA = Transaction Account (for deposits), TA = Trader Account
     const username = t.TrA?.T?.A || t.TA?.T?.A || t.Username || t.User || '';
     
+    // Get amount - For deposits, try DA first (reference amount), then AA (account amount)
+    // Only use amounts > 0 to avoid summing reference amounts
     let amount = 0;
     if (t.DA && t.DA > 0) {
       amount = t.DA;  // Deposit Amount (reference)
@@ -802,9 +892,9 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     return sum + amt;
   }, 0);
   
- // console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
- // console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
- // console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
+  console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
+  console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
+  console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
   
   return mapped;
   } catch (error) {
@@ -813,6 +903,11 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   }
 };
 
+// ============= AGGREGATED DATA FUNCTIONS =============
+
+/**
+ * Helper: Check if a date is within the last N days
+ */
 const isRecentDate = (dateStr, days = 30) => {
   if (!dateStr) return false;
   try {
@@ -826,20 +921,51 @@ const isRecentDate = (dateStr, days = 30) => {
   }
 };
 
+/**
+ * Get complete client data with equity, balance, lots, etc.
+ * 
+ * Data Sources (per docs):
+ * 1. Trading Accounts (AdminType 8, p11): Active, Equity, Balance, DepositsAmount
+ * 2. Leads/Customers (AdminType 2, p8-9): Approved, ApprovedDate, LastLogin, Status
+ * 3. Closed Trades (AdminType 205, p13-14): Volume (VU) for lots calculation
+ * 
+ * Active Client Definition (per your recommendation):
+ * - Has Active=true trading account AND (LastLogin recent OR DepositsAmount > 0 OR has trades)
+ * 
+ * Pending Client Definition:
+ * - Approved=false OR StatusString contains 'Pending'
+ * 
+ * KYC Status:
+ * - From Approved field in leads/customers endpoint
+ * 
+ * Lots Traded:
+ * - Sum of VU from closed trades (not from undocumented Lots field)
+ */
 export const fetchCompleteClientData = async (forcePartnerId = null) => {
   const partnerId = forcePartnerId || sessionPartnerId;
- // console.log("=== Fetching Complete Client Data ===");
- // console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
+  console.log("=== Fetching Complete Client Data ===");
+  console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
   
   // Step 1: Get ALL trading accounts for this partner
   const tradingAccounts = await fetchTradingAccountsBulk(partnerId);
-  //console.log(`Step 1: ${tradingAccounts.length} trading accounts for PartnerId ${partnerId}`);
+  console.log(`Step 1: ${tradingAccounts.length} trading accounts for PartnerId ${partnerId}`);
   
   if (tradingAccounts.length === 0) {
-   // console.warn("No trading accounts found for this partner");
+    console.warn("No trading accounts found for this partner");
     return [];
   }
-    const clientsMap = {};
+  
+  // Log a full sample to understand structure
+  if (tradingAccounts[0]) {
+    console.log("Full sample trading account:", JSON.stringify(tradingAccounts[0], null, 2).substring(0, 1500));
+  }
+  
+  // Step 2: Group trading accounts by username and aggregate data
+  // KYC logic from original api_integration.js:
+  // 1. First check T.Approved (user object)
+  // 2. If undefined, fallback to trading account A flag
+  // Only aggregate financials from REAL accounts (TATD.Type === 1)
+  const clientsMap = {};
   
   tradingAccounts.forEach(acc => {
     const username = acc.T?.A;
@@ -848,6 +974,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     const trader = acc.T;
     const accountActive = acc.A === true;  // Trading account Active flag (docs p11)
     
+    // Check if this is a REAL account (Type === 1) vs DEMO (Type === 2)
     const accountType = acc.TATD || {};
     const isReal = accountType.Type === 1;
     
@@ -874,6 +1001,9 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
         hasActiveAccount: false,      // From trading account A field
         hasRealAccounts: false,       // Has at least one real account
         hasDeposited: trader?.Deposited || false,
+        
+        // KYC - will be determined after all accounts are processed
+        // Store the raw T.Approved value for later
         _userApproved: trader?.Approved,
         traderState: trader?.State,   // 0=Pending, 1=Approved, 2=Rejected
         
@@ -937,7 +1067,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     client._rawAccounts.push(acc);
   });
   
-  //console.log(`Step 2: Grouped into ${Object.keys(clientsMap).length} unique clients`);
+  console.log(`Step 2: Grouped into ${Object.keys(clientsMap).length} unique clients`);
   
   // Step 3: Try to fetch leads/customers data to get Approved, LastLogin, Status fields
   // This may return empty for some users (permission-based)
@@ -945,7 +1075,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   try {
     const usernames = Object.keys(clientsMap);
     leadsData = await fetchIBClients(usernames);
-  //  console.log(`Step 3: Fetched ${leadsData.length} leads/customers records`);
+    console.log(`Step 3: Fetched ${leadsData.length} leads/customers records`);
     
     // Enrich clientsMap with leads data (Approved, LastLogin, Status)
     leadsData.forEach(lead => {
@@ -972,7 +1102,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   // Step 4: Get closed trades for volume (lots) calculation
   // Revenue = Sum of XValley's Commission field (not calculated from volume × rate)
   const trades = await fetchClosedTradesBulk(partnerId);
-  //console.log(`Step 4: ${trades.length} closed trades`);
+  console.log(`Step 4: ${trades.length} closed trades`);
   
   // Build map: username -> { totalCommission, totalVolume, tradeCount }
   // Commission comes directly from XValley - includes all calculations (metals, instruments, etc)
@@ -984,7 +1114,11 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     const username = t.username;
     const vol = parseFloat(t.volume) || 0;
     const comm = parseFloat(t.commission) || 0;  // ← 100% from XValley API
-        
+    
+    if (idx < 3) {
+      console.log(`Trade ${idx + 1}:`, { username, volume: vol, xvalleyCommission: comm, instrument: t.instrument });
+    }
+    
     if (!username || username === 'Unknown') return;
     
     if (!tradesByUser[username]) {
@@ -997,23 +1131,34 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     totalRevenue += comm;  // Base commission = sum of XValley commissions
   });
   
- // console.log(`Total Volume: ${totalVolume.toFixed(2)} lots | Base Commission: $${totalRevenue.toFixed(2)} (XValley, no calculations)`);
+  console.log(`Total Volume: ${totalVolume.toFixed(2)} lots | Base Commission: $${totalRevenue.toFixed(2)} (XValley, no calculations)`);
   
+  // Step 5: Build final client list with proper Active, Pending, KYC, Lots
+  // BaseCommission = Sum of XValley's Commission field per user (not calculated)
   const enrichedClients = Object.values(clientsMap).map(client => {
     const userTrades = tradesByUser[client.username] || { commission: 0, volume: 0, count: 0 };
     
+    // Lots = volume for display, Commission = already from XValley
     const lots = Math.round(userTrades.volume * 100) / 100;
     const baseCommission = Math.round(userTrades.commission * 100) / 100;  // From XValley
     const hasTrades = userTrades.count > 0;
     
+    // ACTIVE STATUS:
+    // Active = has active trading account AND has real accounts
     const isActive = client.hasActiveAccount && client.hasRealAccounts;
+    
+    // KYC STATUS - EXACT LOGIC FROM ORIGINAL api_integration.js
+    // Determine KYC by preferring explicit user.Approved when present,
+    // otherwise fall back to trading-account flag `A` if any trader reports it.
     let approved = false;
     let kycSource = 'none';
     
     if (typeof client._userApproved !== 'undefined') {
+      // T.Approved exists - use it
       approved = (client._userApproved === true || client._userApproved === 'true');
       kycSource = 'user.Approved';
     } else if (client.hasActiveAccount) {
+      // Fallback: if any trading account has A === true
       approved = true;
       kycSource = 'trader.A';
     } else {
@@ -1022,13 +1167,19 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     }
     
     const kycStatus = approved ? 'Approved' : 'Pending';
+    
+    // PENDING STATUS:
+    // Pending = NOT approved
     const isPending = !approved;
     
-        const firstRawAccount = client._rawAccounts?.[0] || {};
+    
+    // Extract raw referral info from first trading account
+    const firstRawAccount = client._rawAccounts?.[0] || {};
     const rawTrader = firstRawAccount.T || {};
     
     return {
       ...client,
+      // Fix floating point precision for all financial values
       equity: Math.round(client.equity * 1000) / 1000,
       balance: Math.round(client.balance * 1000) / 1000,
       deposit: Math.round(client.deposit * 100) / 100,
@@ -1036,9 +1187,11 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
       availableBalance: Math.round(client.availableBalance * 100) / 100,
       closedPL: Math.round(client.closedPL * 100) / 100,
       
+      // Lots from trades volume (for display)
       lots: lots,
       tradeCount: userTrades.count,
       
+      // Base commission from XValley (not calculated)
       baseCommission: baseCommission,
       
       // Active status
@@ -1084,10 +1237,60 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   const withEquity = realClients.filter(c => c.equity > 0).length;
   const withLots = realClients.filter(c => c.lots > 0).length;
   const withTrades = realClients.filter(c => c.hasTrades).length;
-    
+  
+  console.log(`
+=== Client Summary (REAL ACCOUNTS ONLY) ===
+Total Clients with Real Accounts: ${realClients.length}
+(Filtered from ${enrichedClients.length} total users)
+
+--- Activity Status ---
+Active: ${activeCount}
+Inactive: ${inactiveCount}
+With Trades: ${withTrades}
+
+--- KYC Status (from T.Approved) ---
+Approved: ${approvedKycCount}
+Pending (not approved): ${pendingKycCount}
+
+--- Financial (Real Accounts) ---
+With Deposits: ${withDeposits}
+With Equity: ${withEquity}
+With Lots: ${withLots}
+======================
+  `);
+  
+  // Log first 5 clients for verification with all status fields
+  realClients.slice(0, 5).forEach((c, i) => {
+    console.log(`Client ${i + 1}:`, {
+      username: c.username,
+      country: c.country,
+      // Activity
+      active: c.active,
+      hasActiveAccount: c.hasActiveAccount,
+      hasRealAccounts: c.hasRealAccounts,
+      realAccountCount: c.realAccountCount,
+      hasTrades: c.hasTrades,
+      // KYC
+      kycStatus: c.kycStatus,
+      approved: c.approved,
+      isPending: c.isPending,
+      // Financial (from REAL accounts only)
+      deposit: c.deposit,
+      equity: c.equity,
+      balance: c.balance,
+      lots: c.lots,
+      tradeCount: c.tradeCount
+    });
+  });
+  
+  console.log("=== Client Data Complete ===");
   return realClients;
 };
 
+/**
+ * Get network statistics (true ALL-TIME with no date filter)
+ * Base Commission pulled from XValley's Commission field
+ */
 export const fetchNetworkStats = async () => {
   const partnerId = sessionPartnerId;
   
@@ -1117,6 +1320,12 @@ export const fetchNetworkStats = async () => {
   };
 };
 
+/**
+ * Get volume history for charts
+ * IMPORTANT: Revenue is Base Commission pulled from XValley's Commission field
+ * (Already calculated by XValley based on their tier structure)
+ * Volume = Sum of trade.VU (for display only)
+ */
 export const fetchVolumeHistory = async (timeRange = 'This Month') => {
   const now = new Date();
   let fromDate = null;
@@ -1161,13 +1370,13 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
   
   let trades;
   if (useEmptyDates) {
-   // console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
+    console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, '', '');
   } else {
     const fromStr = formatLocalDate(fromDate);
     const toStr = formatLocalDate(now);
-  //  console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
-   // console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
+    console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
+    console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, fromStr, toStr);
   }
   
@@ -1184,11 +1393,17 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
     totalRevenue += comm;  // Sum XValley commissions (no local calculations)
   });
   
-  //console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
+  // Revenue = Base Commission from XValley (already filtered by PartnerId in fetchClosedTradesBulk)
+  console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
   
   return { trades, totalVolume, totalPL, totalRevenue, fromDate, toDate: now };
 };
 
+/**
+ * Fetch 3-month rolling base commission history for bonus tier calculation
+ * Returns array of [month1Commission, month2Commission, month3Commission]
+ * Commission pulled directly from XValley (not calculated)
+ */
 export const fetch3MonthCommissionHistory = async () => {
   const now = new Date();
   const history = [];
@@ -1220,15 +1435,17 @@ export const fetch3MonthCommissionHistory = async () => {
       });
       
       history.unshift(monthRevenue); // Add to front (oldest first)
-     // console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
+      console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
     } catch (error) {
-    //  console.error(`[fetch3MonthCommissionHistory] Error fetching month ${i}:`, error);
+      console.error(`[fetch3MonthCommissionHistory] Error fetching month ${i}:`, error);
       history.unshift(0); // Add 0 if fetch fails
     }
   }
 
   return history;
 };
+
+// ============= UTILITY EXPORTS =============
 
 export const fetchCurrentUser = async () => {
   // Return basic user info from session
@@ -1259,7 +1476,7 @@ export const fetchTradingAccounts = async (username) => {
   const wrapper = data?.Messages?.[0];
   const accounts = wrapper?.Messages || [];
   
-  // console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
+  console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
   
   // Map to consistent format with id field
   return accounts.map(acc => ({
@@ -1296,7 +1513,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
     PageSize: 500
   };
   
-  // console.log(`fetchClientTrades for account ${accountId}`);
+  console.log(`fetchClientTrades for account ${accountId}`);
   const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -1304,7 +1521,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
   const wrapper = data?.Messages?.[0];
   const trades = wrapper?.Messages || [];
   
-  // console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
+  console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
   
   return trades.map(t => ({
     id: t.Ticket || t.I,
@@ -1400,100 +1617,9 @@ export const resetUserPassword = async (username) => {
   return { success: true };
 };
 
-/**
- * Submit withdrawal request to XValley
- * Maps withdrawal method to XValley transaction type and submits via Deposit Action topic
- * @param {Object} data - Withdrawal data
- * @param {string} data.username - Username (trading account owner)
- * @param {number} data.accountId - Trading Account ID
- * @param {number} data.amount - Withdrawal amount
- * @param {string} data.method - Withdrawal method label (e.g., "Bank Wire", "USDT (TRC20)")
- * @param {number} data.xvalleyType - XValley transaction type ID
- * @param {string} data.reference - Optional reference/invoice number
- * @returns {Promise<{success: boolean, message: string, transactionId?: string}>}
- * 
- * Transaction Type IDs (from XValley Appendix A):
- * 1=BankWire, 5=Bitcoin, 34=Ethereum, 35=Tether, 44=USDCoin, 46=TetherTron(TRC20)
- * Side values (Appendix D): 1=Deposit, 2=Withdraw
- * State values (Appendix C): 1=Pending, 2=Processing, 3=Approved, 4=Rejected
- */
 export const submitWithdrawalRequest = async (data) => {
-  try {
-    if (!wsSession || !sessionPartnerId) {
-      return { success: false, message: 'WebSocket not connected. Please reconnect.' };
-    }
-
-    // Validate required fields
-    if (!data.username || !data.accountId || !data.amount || !data.xvalleyType) {
-      return { success: false, message: 'Missing required withdrawal data' };
-    }
-
-    // Prepare the withdrawal request for XValley Deposit Action API
-    const withdrawalData = {
-      TA: data.amount,              // Transaction Amount
-      AA: data.amount,              // Account Amount
-      F: 0,                         // Fee (set by admin later if needed)
-      R: 1,                         // Rate (1:1 conversion)
-      D: new Date().toISOString().split('T')[0],  // Date
-      TId: data.xvalleyType,        // Type ID (e.g., 1=BankWire, 35=Tether, etc.)
-      TCId: 1,                      // Transaction Currency (1=USD)
-      ACId: 1,                      // Account Currency (1=USD)
-      St: 1,                        // State (1=Pending - awaiting approval)
-      TrId: data.accountId,         // Trading Account ID
-      In: data.reference || `WD-${sessionPartnerId}-${Date.now()}`, // Reference/Invoice
-      TS: 2                         // Side (2=Withdrawal, from Appendix D)
-    };
-
-    // Submit to XValley via WebSocket
-    const topic = 'com.fxplayer.deposit';
-    const msg = {
-      MessageType: 100,
-      Username: data.username,
-      Messages: [withdrawalData]
-    };
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('XValley withdrawal request timeout (30s)'));
-      }, 30000);
-
-      wsSession.call(topic, [msg]).then(res => {
-        clearTimeout(timeout);
-        
-        // XValley response format: { MessageType: 200 (OK) or -3 (Error), Messages: [...] }
-        if (res && res.MessageType === 200) {
-          // Success - withdrawal pending admin approval
-          resolve({
-            success: true,
-            message: `Withdrawal request submitted. Your admin will review it shortly.`,
-            transactionId: data.reference || `WD-${sessionPartnerId}-${Date.now()}`,
-            status: 'Pending',
-            method: data.method
-          });
-        } else {
-          // Error response from XValley
-          const errorMsg = res?.Messages?.[0] || 'Unknown error from XValley';
-          resolve({
-            success: false,
-            message: `Withdrawal failed: ${errorMsg}`
-          });
-        }
-      }).catch(err => {
-        clearTimeout(timeout);
-        console.error('[submitWithdrawalRequest] XValley error:', err);
-        resolve({
-          success: false,
-          message: `Error submitting withdrawal to XValley: ${err.message}`
-        });
-      });
-    });
-  } catch (error) {
-    console.error('[submitWithdrawalRequest] Error:', error);
-    return {
-      success: false,
-      message: `Withdrawal error: ${error.message}`
-    };
-  }
+  // Stub
+  return { success: true };
 };
 
 export const fetchWithdrawalsHistory = async () => [];
@@ -1507,11 +1633,11 @@ export const fetchAllTransactions = async (from = '', to = '') => {
     // Filter to only this IB's clients (PartnerId) since API doesn't support direct PartnerId filter
     const ibTransactions = allTransactions.filter(t => t.partnerId === sessionPartnerId);
     
-    // console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
+    console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
     
     return ibTransactions;
   } catch (error) {
-    //console.error('fetchAllTransactions error:', error);
+    console.error('fetchAllTransactions error:', error);
     return [];
   }
 };
@@ -1524,15 +1650,20 @@ export const fetchClientEquity = async (u) => {
 export const fetchClientDeposits = async () => [];
 export const fetchUserCommunications = async () => [];
 
+// ============= CAMPAIGN MANAGEMENT (FOR MARKETING VIEW) =============
+
+/**
+ * Save campaign to Supabase
+ */
 export const saveCampaign = async (campaign) => {
   try {
     let partnerId = getSessionPartnerId();
     if (!partnerId) {
-     // console.log('[Campaigns] Partner ID not available yet, waiting...');
+      console.log('[Campaigns] Partner ID not available yet, waiting...');
       partnerId = await ensurePartnerIdAvailable();
     }
     if (!partnerId) {
-      //console.error('[Campaigns] No partner ID found after waiting');
+      console.error('[Campaigns] No partner ID found after waiting');
       return null;
     }
 
@@ -1559,7 +1690,7 @@ export const saveCampaign = async (campaign) => {
       return null;
     }
 
-    //console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
+    console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
     return campaignObj.id;
   } catch (error) {
     console.error('[Campaigns] Exception saving campaign:', error);
@@ -1568,6 +1699,9 @@ export const saveCampaign = async (campaign) => {
   }
 };
 
+/**
+ * Get all campaigns for current partner from Supabase
+ */
 export const getCampaigns = async () => {
   try {
     let partnerId = getSessionPartnerId();
@@ -1578,14 +1712,14 @@ export const getCampaigns = async () => {
       partnerId = await ensurePartnerIdAvailable();
     }
     
-   // console.log('[Campaigns] Query started. Partner ID:', partnerId);
+    console.log('[Campaigns] Query started. Partner ID:', partnerId);
     
     if (!partnerId) {
       console.warn('[Campaigns] No partner ID even after waiting, using localStorage fallback');
       return getCampaignsLocal();
     }
 
-   // console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
+    console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
     
     const { data, error } = await supabase
       .from('campaigns')
@@ -1593,12 +1727,12 @@ export const getCampaigns = async () => {
       .eq('partner_id', String(partnerId))
       .order('created_date', { ascending: false });
 
-    // console.log('[Campaigns] Supabase response:', { data, error });
+    console.log('[Campaigns] Supabase response:', { data, error });
     
     if (error) {
       console.error('[Campaigns] Error fetching campaigns:', error);
-      // console.log('[Campaigns] Falling back to localStorage');
-      //return getCampaignsLocal();
+      console.log('[Campaigns] Falling back to localStorage');
+      return getCampaignsLocal();
     }
 
     // Convert snake_case to camelCase for consistency
@@ -1610,6 +1744,9 @@ export const getCampaigns = async () => {
     }));
 
     console.log(`[Campaigns] Successfully fetched ${campaigns.length} campaigns for partner ${partnerId}`);
+    if (campaigns.length > 0) {
+      console.log('[Campaigns] First campaign:', campaigns[0]);
+    }
     return campaigns;
   } catch (error) {
     console.error('[Campaigns] Exception fetching campaigns:', error);
@@ -1682,6 +1819,16 @@ export const deleteCampaign = async (id) => {
   }
 };
 
+/**
+ * Get campaign performance stats by matching referrerTag with customer Referrer field
+ * Returns: {
+ *   signups: number,
+ *   activeClients: number,
+ *   totalRevenue: number,
+ *   roi: number (in %),
+ *   clients: array of matching clients
+ * }
+ */
 export const getCampaignStats = async (referrerTag, clients = null) => {
   try {
     // If clients not provided, fetch them
@@ -1756,6 +1903,11 @@ export const getAllCampaignStats = async () => {
   }
 };
 
+// ============= ASSET MANAGEMENT (FOR MARKETING VIEW) =============
+
+/**
+ * Save marketing asset to Supabase Storage + Database (source of truth)
+ */
 export const saveAsset = async (asset) => {
   try {
     let partnerId = getSessionPartnerId();
@@ -2088,242 +2240,6 @@ const getAssetsLocal = () => {
   } catch (error) {
     console.error('[Assets] Error reading assets from localStorage:', error);
     return [];
-  }
-};
-
-// ============= EMAIL NUDGE SYSTEM =============
-
-/**
- * Send email nudge to a partner/client and store record in Supabase
- * Calls backend Express server which uses Nodemailer + Gmail
- * 
- * @param {string} recipientEmail - Email to send nudge to
- * @param {string} recipientName - Name of recipient
- * @param {string} referrerName - Name of person sending nudge (IB)
- * @param {string} nudgeType - Type: 'Complete KYC' or 'Fund Account'
- * @param {number} tier - Network tier (1, 2, or 3)
- * @param {string|number} partnerId - Partner/referrer ID
- * @returns {Promise<object>} - { success: boolean, messageId?: string, error?: string }
- */
-export const sendNudgeEmail = async (recipientEmail, recipientName, referrerName, nudgeType, tier, partnerId) => {
-  try {
-    const backendUrl = API_CONFIG.BACKEND_URL;
-    
-    console.log(`[Nudge] Sending ${nudgeType} email to ${recipientEmail}...`);
-    console.log(`[Nudge] Recipient: ${recipientName}, Referrer: ${referrerName}, Tier: ${tier}`);
-    
-    // Step 1: Call backend to send email
-    const response = await fetch(`${backendUrl}/api/nudges/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipientEmail,
-        recipientName,
-        referrerName,
-        nudgeType,
-        tier,
-        partnerId: String(partnerId)
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error(`[Nudge] Backend error (${response.status}):`, errorData);
-      throw new Error(errorData.error || 'Failed to send email');
-    }
-
-    const emailResult = await response.json();
-    console.log(`[Nudge] ✅ Email sent successfully:`, emailResult);
-
-    // Step 2: Store nudge record in Supabase (for tracking/audit)
-    const nudgeRecord = {
-      recipient_email: recipientEmail,
-      recipient_name: recipientName,
-      referrer_name: referrerName,
-      nudge_type: nudgeType,
-      tier: tier,
-      partner_id: String(partnerId),
-      email_message_id: emailResult.messageId || null,
-      status: 'sent',
-      sent_at: new Date().toISOString(),
-      backend_response: emailResult
-    };
-
-    try {
-      const { data, error: supabaseError } = await supabase
-        .from('nudges')
-        .insert([nudgeRecord])
-        .select();
-
-      if (supabaseError) {
-        console.warn('[Nudge] Supabase insert warning:', supabaseError);
-        // Don't fail the nudge if Supabase insert fails - email was already sent
-      } else {
-        console.log('[Nudge] ✅ Record stored in Supabase:', data?.[0]?.id);
-      }
-    } catch (supabaseErr) {
-      console.warn('[Nudge] Could not store nudge record:', supabaseErr.message);
-      // Continue - email was already sent successfully
-    }
-
-    return {
-      success: true,
-      messageId: emailResult.messageId,
-      timestamp: emailResult.timestamp
-    };
-
-  } catch (error) {
-    console.error('[Nudge] Error sending nudge:', error);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-};
-
-/**
- * Get nudge history from Supabase (for audit trail)
- */
-export const getNudgeHistory = async (partnerId = null) => {
-  try {
-    let query = supabase.from('nudges').select('*');
-    
-    if (partnerId) {
-      query = query.eq('partner_id', String(partnerId));
-    }
-    
-    const { data, error } = await query.order('sent_at', { ascending: false });
-    
-    if (error) {
-      console.error('[Nudge] Error fetching history:', error);
-      return [];
-    }
-    
-    console.log(`[Nudge] Fetched ${data?.length || 0} nudge records`);
-    return data || [];
-  } catch (error) {
-    console.error('[Nudge] Exception fetching nudge history:', error);
-    return [];
-  }
-};
-
-// ============= PAYOUT DETAILS =============
-
-/**
- * Save payout details (bank wire and crypto wallet addresses)
- * @param {Object} payoutData - Payout information
- * @returns {Promise<Object>} Response from backend
- */
-export const savePayoutDetails = async (payoutData) => {
-  try {
-    const partnerId = getSessionPartnerId();
-    if (!partnerId) {
-      throw new Error('Partner ID not found in session');
-    }
-
-    console.log('[Payouts] Saving payout details for partner:', partnerId);
-
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/save`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        partnerId,
-        bankName: payoutData.bankName,
-        accountNumber: payoutData.accountNum,
-        iban: payoutData.accountNum, // Assume IBAN if it looks like one
-        swiftCode: payoutData.bic,
-        usdtTrc20: payoutData.usdtTrc,
-        usdtErc20: payoutData.usdtErc,
-        usdcPolygon: payoutData.usdcPol,
-        usdcErc20: payoutData.usdcErc,
-        preferredMethod: payoutData.preferredMethod
-      })
-    });
-
-    const result = await response.json();
-    
-    if (!response.ok) {
-      console.error('[Payouts] ❌ Save failed:', result.error);
-      throw new Error(result.error || 'Failed to save payout details');
-    }
-
-    console.log('[Payouts] ✅ Saved successfully');
-    return result;
-  } catch (error) {
-    console.error('[Payouts] Exception:', error);
-    throw error;
-  }
-};
-
-/**
- * Fetch payout details for current partner
- * @returns {Promise<Object|null>} Payout details or null if not found
- */
-export const getPayoutDetails = async () => {
-  try {
-    const partnerId = getSessionPartnerId();
-    if (!partnerId) {
-      throw new Error('Partner ID not found in session');
-    }
-
-    console.log('[Payouts] Fetching payout details for partner:', partnerId);
-
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/${partnerId}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const result = await response.json();
-    
-    if (!response.ok) {
-      console.error('[Payouts] ❌ Fetch failed:', result.error);
-      throw new Error(result.error || 'Failed to fetch payout details');
-    }
-
-    console.log('[Payouts] ✅ Fetched successfully');
-    return result.data;
-  } catch (error) {
-    console.error('[Payouts] Exception:', error);
-    return null;
-  }
-};
-
-/**
- * Delete payout details for current partner
- * @returns {Promise<Object>} Response from backend
- */
-export const deletePayoutDetails = async () => {
-  try {
-    const partnerId = getSessionPartnerId();
-    if (!partnerId) {
-      throw new Error('Partner ID not found in session');
-    }
-
-    console.log('[Payouts] Deleting payout details for partner:', partnerId);
-
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payouts/${partnerId}`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const result = await response.json();
-    
-    if (!response.ok) {
-      console.error('[Payouts] ❌ Delete failed:', result.error);
-      throw new Error(result.error || 'Failed to delete payout details');
-    }
-
-    console.log('[Payouts] ✅ Deleted successfully');
-    return result;
-  } catch (error) {
-    console.error('[Payouts] Exception:', error);
-    throw error;
   }
 };
 
