@@ -3335,7 +3335,7 @@ const SettingsView = () => {
                   const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/disable`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ username: currentUser })
+                      body: JSON.stringify({ username: profile.name })
                   });
                   const data = await res.json();
                   if (data.success) {
@@ -3354,7 +3354,7 @@ const SettingsView = () => {
               const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/setup`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username: currentUser })
+                  body: JSON.stringify({ username: profile.name })
               });
               const data = await res.json();
               if (data.success) {
@@ -3378,7 +3378,7 @@ const SettingsView = () => {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                  username: currentUser,
+                  username: profile.name,
                   secret: twoFASecret,
                   token: twoFACode
               })
