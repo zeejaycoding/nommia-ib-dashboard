@@ -3919,7 +3919,7 @@ export default function App() {
 
   const initAPI = async (token) => {
     try {
-    //  console.log("=== Initializing XValley Connection ===");
+      console.log("=== Initializing XValley Connection ===");
       setApiStatus('connecting');
       setIsLoadingClients(true);
       
@@ -3928,20 +3928,20 @@ export default function App() {
       
       // Step 2: Connect WebSocket and authenticate
       await connectWebSocket(token);
-    //  console.log("✅ WebSocket Connected");
+      console.log("✅ WebSocket Connected");
       
       // Step 3: Fetch complete client data (clients + trading accounts + trades)
-    //  console.log("Fetching complete client data...");
+      console.log("Fetching complete client data...");
       const clientData = await fetchCompleteClientData();
-    //  console.log(`✅ Loaded ${clientData.length} clients with full data`);
+      console.log(`✅ Loaded ${clientData.length} clients with full data`);
       
       setClients(clientData);
       setClientUsernames(clientData.map(c => c.username).filter(Boolean));      
       
       // Step 4: Fetch network stats for dashboard
-    //  console.log("Fetching network statistics...");
+      console.log("Fetching network statistics...");
       const stats = await fetchNetworkStats();
-    //  console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
+      console.log(`✅ Network Stats: Volume=${stats.totalVolume.toFixed(2)}, Revenue=$${stats.totalRevenue.toFixed(2)}, Trades=${stats.tradesCount}`);
       
       setTotalVolume(stats.totalVolume);
       setRevenue(stats.totalRevenue);
@@ -3954,10 +3954,10 @@ export default function App() {
       
       setApiStatus('connected');
       setIsLoadingClients(false);
-    //  console.log("=== API Initialization Complete ===");
+      console.log("=== API Initialization Complete ===");
       
     } catch (error) {
-    //  console.error("API Connection Failed:", error);
+      console.error("API Connection Failed:", error);
       setApiStatus('error');
       setIsLoadingClients(false);
     }
