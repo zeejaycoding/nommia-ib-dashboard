@@ -2330,17 +2330,22 @@ export const deletePayoutDetails = async () => {
 // ============= SECURITY API FUNCTIONS =============
 
 /**
- * Send OTP to email address
- * @param {string} email - Email address
- * @param {string} type - Type of OTP (e.g., 'security', 'admin')
- * @returns {Promise<object>} - { success: boolean, message?: string }
+ * Send OTP to email address - matches nudge email pattern
+ * Calls backend Express server which uses Nodemailer + Brevo SMTP
+ * Stores OTP record in Supabase for audit trail
+ * 
+ * @param {string} email - Email address to send OTP to
+ * @param {string} type - Type of OTP: 'security' or 'admin'
+ * @returns {Promise<object>} - { success: boolean, message?: string, code?: string }
  */
 export const sendOtp = async (email, type = 'security') => {
   try {
+    const backendUrl = API_CONFIG.BACKEND_URL;
+    
     // Validate email
-    if (!email || email.trim() === '') {
+    if (!email || typeof email !== 'string' || email.trim() === '') {
       const errorMsg = 'Email is required to send OTP';
-      console.error('[OTP] ❌', errorMsg);
+      console.error('[OTP] ❌', errorMsg, 'Received:', email);
       return {
         success: false,
         message: errorMsg
@@ -2349,8 +2354,10 @@ export const sendOtp = async (email, type = 'security') => {
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      const errorMsg = `Invalid email format: ${email}`;
+    const cleanEmail = email.trim().toLowerCase();
+    
+    if (!emailRegex.test(cleanEmail)) {
+      const errorMsg = `Invalid email format: ${cleanEmail}`;
       console.error('[OTP] ❌', errorMsg);
       return {
         success: false,
@@ -2358,29 +2365,60 @@ export const sendOtp = async (email, type = 'security') => {
       };
     }
 
-    console.log(`[OTP] Sending OTP to ${email} (type: ${type})...`);
+    console.log(`[OTP] Sending OTP to ${cleanEmail} (type: ${type})...`);
     
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
+    // Step 1: Call backend to send OTP
+    const response = await fetch(`${backendUrl}/api/otp/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        email: email.trim(),
-        type
+      body: JSON.stringify({
+        email: cleanEmail,
+        type: type || 'security'
       })
     });
 
-    const data = await response.json();
-    
     if (!response.ok) {
-      console.error(`[OTP] ❌ Server error (${response.status}):`, data);
-      return {
-        success: false,
-        message: data.error || data.message || `Server error: ${response.status}`
-      };
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error(`[OTP] Backend error (${response.status}):`, errorData);
+      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
     }
 
-    console.log(`[OTP] ✅ Successfully sent to ${email}`);
-    return data;
+    const otpResult = await response.json();
+    console.log(`[OTP] ✅ OTP sent successfully:`, otpResult);
+
+    // Step 2: Store OTP record in Supabase (for tracking/audit)
+    const otpRecord = {
+      email: cleanEmail,
+      type: type || 'security',
+      status: 'sent',
+      sent_at: new Date().toISOString(),
+      backend_response: otpResult,
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes from now
+    };
+
+    try {
+      const { data, error: supabaseError } = await supabase
+        .from('otp_logs')
+        .insert([otpRecord])
+        .select();
+
+      if (supabaseError) {
+        console.warn('[OTP] Supabase insert warning:', supabaseError);
+        // Don't fail the OTP if Supabase insert fails - email was already sent
+      } else {
+        console.log('[OTP] ✅ Record stored in Supabase:', data?.[0]?.id);
+      }
+    } catch (supabaseErr) {
+      console.warn('[OTP] Could not store OTP record:', supabaseErr.message);
+      // Continue - email was already sent successfully
+    }
+
+    return {
+      success: true,
+      message: `Security code sent to ${cleanEmail}`,
+      timestamp: otpResult.timestamp
+    };
+
   } catch (error) {
     console.error('[OTP] ❌ Send error:', error);
     return {
@@ -2391,32 +2429,71 @@ export const sendOtp = async (email, type = 'security') => {
 };
 
 /**
- * Verify OTP code
+ * Verify OTP code - improved error handling
  * @param {string} email - Email address
  * @param {string} code - 6-digit OTP code
  * @returns {Promise<object>} - { success: boolean, message?: string }
  */
 export const verifyOtp = async (email, code) => {
   try {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanCode = (code || '').trim();
+
+    if (!cleanEmail || !cleanCode) {
+      console.error('[OTP] ❌ Email and code are required');
+      return {
+        success: false,
+        message: 'Email and code are required'
+      };
+    }
+
+    console.log(`[OTP] Verifying code for ${cleanEmail}...`);
+
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        email,
-        code
+      body: JSON.stringify({
+        email: cleanEmail,
+        code: cleanCode
       })
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error(`[OTP] Verify backend error (${response.status}):`, errorData);
+      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
+    }
+
     const data = await response.json();
-    console.log(`[OTP] Verify for ${email}:`, data.success ? '✅' : '❌');
+    console.log(`[OTP] Verify for ${cleanEmail}:`, data.success ? '✅' : '❌');
+    
+    // Store verification attempt
+    try {
+      await supabase
+        .from('otp_logs')
+        .update({
+          status: data.success ? 'verified' : 'failed',
+          verified_at: new Date().toISOString()
+        })
+        .eq('email', cleanEmail)
+        .order('sent_at', { ascending: false })
+        .limit(1);
+    } catch (err) {
+      console.warn('[OTP] Could not update verification status:', err.message);
+    }
+
     return data;
   } catch (error) {
     console.error('[OTP] Verify error:', error);
-    throw error;
+    return {
+      success: false,
+      message: error.message || 'Failed to verify OTP'
+    };
   }
 };
 
 /**
- * Reset password with OTP verification
+ * Reset password with OTP verification - improved error handling
  * @param {string} email - User email
  * @param {string} oldPassword - Current password
  * @param {string} newPassword - New password
@@ -2425,22 +2502,56 @@ export const verifyOtp = async (email, code) => {
  */
 export const resetPasswordWithOtp = async (email, oldPassword, newPassword, code) => {
   try {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanCode = (code || '').trim();
+
+    // Validate required fields
+    if (!cleanEmail || !oldPassword || !newPassword || !cleanCode) {
+      console.error('[Password] ❌ All fields are required (email, oldPassword, newPassword, code)');
+      return {
+        success: false,
+        message: 'Missing required fields'
+      };
+    }
+
+    // Validate password strength
+    if (newPassword.length < 6) {
+      console.error('[Password] ❌ New password must be at least 6 characters');
+      return {
+        success: false,
+        message: 'New password must be at least 6 characters'
+      };
+    }
+
+    console.log('[Password] Resetting password with OTP for:', cleanEmail);
+
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/password/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        email,
-        oldPassword,
-        newPassword,
-        code
+      body: JSON.stringify({
+        email: cleanEmail,
+        oldPassword: oldPassword,
+        newPassword: newPassword,
+        code: cleanCode
       })
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error(`[Password] Backend error (${response.status}):`, errorData);
+      throw new Error(errorData.error || errorData.message || `Server error: ${response.status}`);
+    }
+
     const data = await response.json();
     console.log('[Password] Reset with OTP:', data.success ? '✅' : '❌');
+    
     return data;
   } catch (error) {
     console.error('[Password] Reset error:', error);
-    throw error;
+    return {
+      success: false,
+      message: error.message || 'Failed to reset password'
+    };
   }
 };
 
