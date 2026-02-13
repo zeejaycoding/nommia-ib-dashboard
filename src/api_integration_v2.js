@@ -12,6 +12,7 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 
 export const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
+  BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   // Use the local Vite proxy in development, direct URL in production
   WS_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
   REALM: "fxplayer",
