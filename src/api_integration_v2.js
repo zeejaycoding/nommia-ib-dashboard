@@ -35,6 +35,7 @@ let wsSession = null;
 let wsConnection = null;
 let wsSessionId = null;
 let sessionPartnerId = null;
+let sessionRoles = []; // Store user roles from PING response (e.g., ["countrymanager", "admin"])
 
 /**
  * Wait for sessionPartnerId to be available (with timeout)
@@ -169,8 +170,11 @@ export const connectWebSocket = (token) => {
         // Messages[3] = PartnerId as string (e.g., "36")
         // Messages[4] = CompanyId as string (e.g., "5")
         wsSessionId = data.Messages?.[0] || null;
+        
+        // Store roles from PING response
+        sessionRoles = Array.isArray(data.Messages?.[1]) ? data.Messages[1] : [];
         console.log("Session ID (username):", wsSessionId);
-        console.log("Roles:", data.Messages?.[1]);
+        console.log("Roles:", sessionRoles);
         
         // PartnerId is at Messages[3] as a string
         const partnerIdStr = data.Messages?.[3];
@@ -223,7 +227,74 @@ export const getSessionPartnerId = () => sessionPartnerId;
 
 export const getSessionUsername = () => wsSessionId;
 
+export const getSessionRoles = () => sessionRoles;
+
 /**
+ * Convert raw role string to UI display format
+ * "countrymanager" => "CountryManager"
+ * "ib" => "IB"
+ * "admin" => "Admin"
+ */
+export const normalizeRoleFormat = (role) => {
+  if (!role) return null;
+  const lowerRole = role.toLowerCase().trim();
+  
+  if (lowerRole === 'countrymanager' || lowerRole === 'country_manager') return 'CountryManager';
+  if (lowerRole === 'regionalmanager' || lowerRole === 'regional_manager') return 'RegionalManager';
+  if (lowerRole === 'ib') return 'IB';
+  if (lowerRole === 'admin') return 'Admin';
+  if (lowerRole === 'cm') return 'CountryManager';
+  if (lowerRole === 'rm') return 'RegionalManager';
+  
+  return role;
+};
+
+/**
+ * Get the primary/main role for the logged-in user
+ */
+export const getUserPrimaryRole = () => {
+  if (!sessionRoles || sessionRoles.length === 0) return 'IB';
+  
+  // Order of precedence for display
+  const normRoles = sessionRoles.map(r => normalizeRoleFormat(r)).filter(Boolean);
+  
+  if (normRoles.includes('Admin')) return 'Admin';
+  if (normRoles.includes('RegionalManager')) return 'RegionalManager';
+  if (normRoles.includes('CountryManager')) return 'CountryManager';
+  if (normRoles.includes('IB')) return 'IB';
+  
+  return normRoles[0] || 'IB';
+};
+
+/**
+ * Get all valid roles user can view as (for admin hierarchy)
+ */
+export const getAccessibleRoles = () => {
+  if (!sessionRoles || sessionRoles.length === 0) return ['IB'];
+  
+  const normRoles = sessionRoles.map(r => normalizeRoleFormat(r)).filter(Boolean);
+  const uniqueRoles = [...new Set(normRoles)];
+  
+  // Admins can view as all roles
+  if (uniqueRoles.includes('Admin')) {
+    return ['Admin', 'RegionalManager', 'CountryManager', 'IB'];
+  }
+  
+  // Regional managers can view as RM and IB
+  if (uniqueRoles.includes('RegionalManager')) {
+    return ['RegionalManager', 'IB'];
+  }
+  
+  // Country managers can view as CM and IB
+  if (uniqueRoles.includes('CountryManager')) {
+    return ['CountryManager', 'IB'];
+  }
+  
+  return uniqueRoles;
+};
+
+/**
+ * Check if user has a specific role
  * Fetch ALL leads/clients from the platform for network building
  * Returns clients with their referrer information (no filtering)
  * This is used to build complete Tier 1/2/3 hierarchies
