@@ -1144,12 +1144,15 @@ app.post('/api/otp/send', async (req, res) => {
   try {
     console.log('[OTP Send] Request received. Body:', JSON.stringify(req.body));
     
-    const { email, type } = req.body;
+    let { email, type } = req.body;
+
+    // Trim email before processing
+    email = email ? email.trim() : '';
 
     console.log(`[OTP Send] Extracted email: "${email}", type: "${type}"`);
 
     // Validate email
-    if (!email || email.trim() === '') {
+    if (!email || email === '') {
       console.warn('[OTP Send] ❌ Email is missing or empty');
       return res.status(400).json({ 
         error: 'Missing required field: email',
@@ -1157,13 +1160,16 @@ app.post('/api/otp/send', async (req, res) => {
       });
     }
 
-    // Validate email format
+    // Validate email format - use standard email validation
+    // More permissive regex that handles most valid email addresses
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    if (!emailRegex.test(email.toLowerCase())) {
       console.warn(`[OTP Send] ❌ Invalid email format: "${email}"`);
+      console.log(`[OTP Send] Debug - email length: ${email.length}, chars: ${email.split('').map(c => `${c}(${c.charCodeAt(0)})`).join(', ')}`);
       return res.status(400).json({ 
         error: 'Invalid email format',
-        received: email
+        received: email,
+        debug: `Length: ${email.length}`
       });
     }
 
@@ -1172,8 +1178,8 @@ app.post('/api/otp/send', async (req, res) => {
     const timestamp = Date.now();
     const expiryTime = 10 * 60 * 1000; // 10 minutes
 
-    // Store OTP in memory
-    otpStore.set(email, {
+    // Store OTP in memory (use lowercase email as key for consistency)
+    otpStore.set(email.toLowerCase(), {
       code: otp,
       timestamp: timestamp,
       expiry: timestamp + expiryTime,
@@ -1257,7 +1263,10 @@ app.post('/api/otp/send', async (req, res) => {
  */
 app.post('/api/otp/verify', async (req, res) => {
   try {
-    const { email, code } = req.body;
+    let { email, code } = req.body;
+
+    // Normalize email for consistency
+    email = email ? email.trim().toLowerCase() : '';
 
     if (!email || !code) {
       return res.status(400).json({ 
@@ -1317,7 +1326,10 @@ app.post('/api/otp/verify', async (req, res) => {
  */
 app.post('/api/password/reset', async (req, res) => {
   try {
-    const { email, oldPassword, newPassword, code } = req.body;
+    let { email, oldPassword, newPassword, code } = req.body;
+
+    // Normalize email for consistency
+    email = email ? email.trim().toLowerCase() : '';
 
     if (!email || !oldPassword || !newPassword || !code) {
       return res.status(400).json({

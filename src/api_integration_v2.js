@@ -2295,6 +2295,8 @@ export const getNudgeHistory = async () => {
  */
 export const sendOTP = async (email, type = 'security') => {
   try {
+    // Normalize email: trim whitespace and convert to lowercase
+    email = email ? email.trim().toLowerCase() : '';
     console.log(`[OTP] Sending ${type} OTP to ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
@@ -2335,6 +2337,8 @@ export const sendOTP = async (email, type = 'security') => {
  */
 export const verifyOTP = async (email, code, type = 'security') => {
   try {
+    // Normalize email: trim whitespace and convert to lowercase
+    email = email ? email.trim().toLowerCase() : '';
     console.log(`[OTP] Verifying ${type} OTP for ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
