@@ -268,6 +268,12 @@ export const getUserPrimaryRole = () => {
 
 /**
  * Get all valid roles user can view as (for admin hierarchy)
+ * 
+ * ROLE HIERARCHY (from highest to lowest):
+ * 1. Admin      - Can view as: Admin, RM, CM, IB
+ * 2. RM         - Can view as: RM, CM, IB
+ * 3. CM         - Can view as: CM, IB
+ * 4. IB         - Can view as: IB only
  */
 export const getAccessibleRoles = () => {
   if (!sessionRoles || sessionRoles.length === 0) return ['IB'];
@@ -275,26 +281,81 @@ export const getAccessibleRoles = () => {
   const normRoles = sessionRoles.map(r => normalizeRoleFormat(r)).filter(Boolean);
   const uniqueRoles = [...new Set(normRoles)];
   
-  // Admins can view as all roles
+  // Admins can view as all roles (full hierarchy)
   if (uniqueRoles.includes('Admin')) {
     return ['Admin', 'RegionalManager', 'CountryManager', 'IB'];
   }
   
-  // Regional managers can view as RM and IB
+  // Regional managers can view as RM and lower (CM, IB)
   if (uniqueRoles.includes('RegionalManager')) {
-    return ['RegionalManager', 'IB'];
+    return ['RegionalManager', 'CountryManager', 'IB'];
   }
   
-  // Country managers can view as CM and IB
+  // Country managers can view as CM and lower (IB)
   if (uniqueRoles.includes('CountryManager')) {
     return ['CountryManager', 'IB'];
   }
   
-  return uniqueRoles;
+  // IB can only view as IB
+  return ['IB'];
+};
+
+/**
+ * Check if user is allowed to view as a specific role
+ * Returns true if the role is in the user's accessible roles
+ * 
+ * @param {string} targetRole - The role to check (e.g., 'Admin', 'RegionalManager', 'CountryManager', 'IB')
+ * @returns {boolean} - True if user can view as this role
+ */
+export const canViewAsRole = (targetRole) => {
+  const accessible = getAccessibleRoles();
+  return accessible.includes(targetRole);
+};
+
+/**
+ * Get the highest role in the hierarchy that the user has
+ * Used to determine the "master" role and restrictions
+ * 
+ * @returns {string} - The highest role (Admin > RM > CM > IB)
+ */
+export const getHighestRole = () => {
+  if (!sessionRoles || sessionRoles.length === 0) return 'IB';
+  
+  const normRoles = sessionRoles.map(r => normalizeRoleFormat(r)).filter(Boolean);
+  const uniqueRoles = [...new Set(normRoles)];
+  
+  if (uniqueRoles.includes('Admin')) return 'Admin';
+  if (uniqueRoles.includes('RegionalManager')) return 'RegionalManager';
+  if (uniqueRoles.includes('CountryManager')) return 'CountryManager';
+  return 'IB';
 };
 
 /**
  * Check if user has a specific role
+ * 
+ * Role hierarchy for logging purposes (for debugging):
+ * Admin can view as:      [Admin, RM, CM, IB]
+ * RM can view as:         [RM, CM, IB]
+ * CM can view as:         [CM, IB]
+ * IB can view as:         [IB]
+ */
+
+/**
+ * Log role change attempt (for audit trail)
+ */
+export const logRoleChange = (fromRole, toRole, allowed) => {
+  const timestamp = new Date().toISOString();
+  const highestRole = getHighestRole();
+  const username = wsSessionId || 'unknown';
+  
+  if (allowed) {
+    console.log(`[ROLE_HIERARCHY] ✅ ${timestamp} | User: ${username} | Highest: ${highestRole} | Changed: ${fromRole} → ${toRole}`);
+  } else {
+    console.warn(`[ROLE_HIERARCHY] ⚠️ ${timestamp} | User: ${username} | Highest: ${highestRole} | Blocked: ${fromRole} → ${toRole} (UNAUTHORIZED)`);
+  }
+};
+
+/**
  * Fetch ALL leads/clients from the platform for network building
  * Returns clients with their referrer information (no filtering)
  * This is used to build complete Tier 1/2/3 hierarchies

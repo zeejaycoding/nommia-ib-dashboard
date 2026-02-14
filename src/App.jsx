@@ -23,6 +23,9 @@ import {
   getSessionRoles,
   getUserPrimaryRole,
   getAccessibleRoles,
+  getHighestRole,
+  canViewAsRole,
+  logRoleChange,
   subscribeToTradeUpdates,
   subscribeToAccountEvents,
   fetchClientTrades,
@@ -4131,10 +4134,82 @@ export default function App() {
                <div className="bg-neutral-800/50 rounded-lg p-2 border border-neutral-700 mb-4">
                  <p className="text-xs text-neutral-500 uppercase font-bold mb-2 text-center">Demo View As:</p>
                  <div className="flex gap-1 justify-center flex-wrap">
-                   <button onClick={() => setUserRole('IB')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'IB' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>IB</button>
-                   <button onClick={() => setUserRole('CountryManager')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'CountryManager' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>CM</button>
-                   <button onClick={() => setUserRole('RegionalManager')} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'RegionalManager' ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-700 text-neutral-400'}`}>RM</button>
-                   <button onClick={() => {setUserRole('Admin'); setActiveTab('admin');}} className={`px-2 py-1 text-[10px] rounded mb-1 ${userRole === 'Admin' ? 'bg-red-500 text-white font-bold' : 'bg-neutral-700 text-neutral-400'}`}>Admin</button>
+                   {/* IB Button - Everyone can view as IB */}
+                   <button 
+                     onClick={() => {
+                       logRoleChange(userRole, 'IB', canViewAsRole('IB'));
+                       setUserRole('IB');
+                     }}
+                     disabled={!canViewAsRole('IB')}
+                     title={!canViewAsRole('IB') ? 'You do not have access to IB role' : ''}
+                     className={`px-2 py-1 text-[10px] rounded mb-1 transition-all ${
+                       userRole === 'IB' 
+                         ? 'bg-amber-500 text-black font-bold' 
+                         : canViewAsRole('IB')
+                         ? 'bg-neutral-700 text-neutral-400 hover:bg-neutral-600 cursor-pointer'
+                         : 'bg-neutral-800 text-neutral-600 cursor-not-allowed opacity-50'
+                     }`}
+                   >
+                     IB
+                   </button>
+                   
+                   {/* CM Button - Only if user has CM or higher role */}
+                   <button 
+                     onClick={() => {
+                       logRoleChange(userRole, 'CountryManager', canViewAsRole('CountryManager'));
+                       setUserRole('CountryManager');
+                     }}
+                     disabled={!canViewAsRole('CountryManager')}
+                     title={!canViewAsRole('CountryManager') ? 'Your role is too low to view as CM' : ''}
+                     className={`px-2 py-1 text-[10px] rounded mb-1 transition-all ${
+                       userRole === 'CountryManager' 
+                         ? 'bg-amber-500 text-black font-bold' 
+                         : canViewAsRole('CountryManager')
+                         ? 'bg-neutral-700 text-neutral-400 hover:bg-neutral-600 cursor-pointer'
+                         : 'bg-neutral-800 text-neutral-600 cursor-not-allowed opacity-50'
+                     }`}
+                   >
+                     CM
+                   </button>
+                   
+                   {/* RM Button - Only if user has RM or higher role */}
+                   <button 
+                     onClick={() => {
+                       logRoleChange(userRole, 'RegionalManager', canViewAsRole('RegionalManager'));
+                       setUserRole('RegionalManager');
+                     }}
+                     disabled={!canViewAsRole('RegionalManager')}
+                     title={!canViewAsRole('RegionalManager') ? 'Your role is too low to view as RM' : ''}
+                     className={`px-2 py-1 text-[10px] rounded mb-1 transition-all ${
+                       userRole === 'RegionalManager' 
+                         ? 'bg-amber-500 text-black font-bold' 
+                         : canViewAsRole('RegionalManager')
+                         ? 'bg-neutral-700 text-neutral-400 hover:bg-neutral-600 cursor-pointer'
+                         : 'bg-neutral-800 text-neutral-600 cursor-not-allowed opacity-50'
+                     }`}
+                   >
+                     RM
+                   </button>
+                   
+                   {/* Admin Button - Only if user has Admin role */}
+                   <button 
+                     onClick={() => {
+                       logRoleChange(userRole, 'Admin', canViewAsRole('Admin'));
+                       setUserRole('Admin');
+                       setActiveTab('admin');
+                     }}
+                     disabled={!canViewAsRole('Admin')}
+                     title={!canViewAsRole('Admin') ? 'Only admins can view as Admin' : ''}
+                     className={`px-2 py-1 text-[10px] rounded mb-1 transition-all ${
+                       userRole === 'Admin' 
+                         ? 'bg-red-500 text-white font-bold' 
+                         : canViewAsRole('Admin')
+                         ? 'bg-neutral-700 text-neutral-400 hover:bg-neutral-600 cursor-pointer'
+                         : 'bg-neutral-800 text-neutral-600 cursor-not-allowed opacity-50'
+                     }`}
+                   >
+                     Admin
+                   </button>
                  </div>
                </div>
            </div>
