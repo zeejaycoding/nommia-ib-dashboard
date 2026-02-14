@@ -3172,7 +3172,7 @@ const SettingsView = () => {
   // Profile will be loaded from localStorage or API
   const [profile, setProfile] = useState({
       name: localStorage.getItem('username') || "",
-      email: "",
+      email: localStorage.getItem('email') || "",
       phone: ""
   });
 
@@ -3252,6 +3252,12 @@ const SettingsView = () => {
   // 3. Send OTP using API function
   const handleRequestOTP = async () => {
       try {
+          // Validate email is available
+          if (!profile.email || profile.email.trim() === '') {
+              alert('❌ Email not found in your profile. Please update your email in your account settings first.');
+              return;
+          }
+
           const result = await sendOTP(profile.email, verificationType === 'password' ? 'password' : 'security');
           if (result.success) {
               alert(`✅ ${result.message}`);
@@ -3451,13 +3457,25 @@ const SettingsView = () => {
                     
                     {otpStep === 'initial' ? (
                         <div className="space-y-4">
-                            <p className="text-sm text-neutral-400">
-                                {verificationType === 'password' 
-                                    ? "We need to verify your identity before changing your password." 
-                                    : "You are updating sensitive account information. Please verify your identity."}
-                                <br/><br/>Click below to send a code to: <span className="text-white font-bold">{profile.email}</span>
-                            </p>
-                            <button onClick={handleRequestOTP} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Send Verification Code</button>
+                            {!profile.email || profile.email.trim() === '' ? (
+                                <>
+                                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                                        <p className="text-sm text-amber-300">⚠️ <strong>Email Required</strong></p>
+                                        <p className="text-xs text-amber-200 mt-2">Please update your email address in the profile section above before you can verify changes with OTP.</p>
+                                    </div>
+                                    <button onClick={() => {setShowSecurityModal(false); document.querySelector('[class*="Email Address"]')?.scrollIntoView({behavior: 'smooth'});}} className="w-full py-3 bg-neutral-700 hover:bg-neutral-600 text-white font-bold rounded-lg">Close & Update Email</button>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="text-sm text-neutral-400">
+                                        {verificationType === 'password' 
+                                            ? "We need to verify your identity before changing your password." 
+                                            : "You are updating sensitive account information. Please verify your identity."}
+                                        <br/><br/>Click below to send a code to: <span className="text-white font-bold">{profile.email}</span>
+                                    </p>
+                                    <button onClick={handleRequestOTP} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Send Verification Code</button>
+                                </>
+                            )}
                         </div>
                     ) : (
                         <div className="space-y-4 animate-fadeIn">
@@ -3576,7 +3594,7 @@ const SettingsView = () => {
                 <div className="space-y-4">
                     <h3 className="text-lg font-bold text-white flex items-center"><Users size={18} className="mr-2 text-neutral-500"/> Basic Information</h3>
                     <div><label className="text-xs text-neutral-500 font-bold">Full Name</label><input className="w-full bg-neutral-950 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} /></div>
-                    <div><label className="text-xs text-neutral-500 font-bold">Email Address</label><input className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-neutral-500 mt-1 cursor-not-allowed" value={profile.email} disabled /><p className="text-[10px] text-neutral-600 mt-1">Contact support to change email.</p></div>
+                    <div><label className="text-xs text-neutral-500 font-bold">Email Address</label><input className="w-full bg-neutral-950 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" placeholder="Enter your email for security codes" value={profile.email} onChange={e => {setProfile({...profile, email: e.target.value}); localStorage.setItem('email', e.target.value);}} /><p className="text-[10px] text-neutral-600 mt-1">{profile.email ? '✓ Email saved for OTP verification' : 'Required for OTP verification and security codes'}</p></div>
                     <div><label className="text-xs text-neutral-500 font-bold">Phone Number</label><input className="w-full bg-neutral-950 border border-neutral-700 rounded p-2 text-white mt-1 focus:border-amber-500 outline-none" value={profile.phone} onChange={e => setProfile({...profile, phone: e.target.value})} /></div>
                 </div>
 
