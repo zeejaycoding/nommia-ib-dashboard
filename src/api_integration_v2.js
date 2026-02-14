@@ -1506,13 +1506,13 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
   
   let trades;
   if (useEmptyDates) {
-    console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
+   // console.log(`[fetchVolumeHistory] Time range ${timeRange}: fetching ALL trades (no date filter)`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, '', '');
   } else {
     const fromStr = formatLocalDate(fromDate);
     const toStr = formatLocalDate(now);
-    console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
-    console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
+    //console.log(`[fetchVolumeHistory] Time range ${timeRange}: from ${fromStr} to ${toStr}`);
+    //console.log(`[fetchVolumeHistory] Current date: ${new Date().toISOString()}, Local today: ${formatLocalDate(now)}`);
     trades = await fetchClosedTradesBulk(sessionPartnerId, fromStr, toStr);
   }
   
@@ -1530,7 +1530,7 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
   });
   
   // Revenue = Base Commission from XValley (already filtered by PartnerId in fetchClosedTradesBulk)
-  console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
+  //console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
   
   return { trades, totalVolume, totalPL, totalRevenue, fromDate, toDate: now };
 };
@@ -1571,9 +1571,9 @@ export const fetch3MonthCommissionHistory = async () => {
       });
       
       history.unshift(monthRevenue); // Add to front (oldest first)
-      console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
+     // console.log(`[fetch3MonthCommissionHistory] ${formatLocalDate(monthStart)} - ${formatLocalDate(monthEnd)}: $${monthRevenue.toFixed(2)} (XValley commission)`);
     } catch (error) {
-      console.error(`[fetch3MonthCommissionHistory] Error fetching month ${i}:`, error);
+     // console.error(`[fetch3MonthCommissionHistory] Error fetching month ${i}:`, error);
       history.unshift(0); // Add 0 if fetch fails
     }
   }
@@ -1612,7 +1612,7 @@ export const fetchTradingAccounts = async (username) => {
   const wrapper = data?.Messages?.[0];
   const accounts = wrapper?.Messages || [];
   
-  console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
+ // console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
   
   // Map to consistent format with id field
   return accounts.map(acc => ({
@@ -1649,7 +1649,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
     PageSize: 500
   };
   
-  console.log(`fetchClientTrades for account ${accountId}`);
+ // console.log(`fetchClientTrades for account ${accountId}`);
   const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -1657,7 +1657,7 @@ export const fetchClientTrades = async (accountId, fromDate, toDate) => {
   const wrapper = data?.Messages?.[0];
   const trades = wrapper?.Messages || [];
   
-  console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
+ // console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
   
   return trades.map(t => ({
     id: t.Ticket || t.I,
@@ -1814,7 +1814,7 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
       throw new Error(errorMsg);
     } else {
       // Unexpected response
-      console.log("[Withdrawal] ℹ️ Unexpected response type:", data.MessageType);
+    //  console.log("[Withdrawal] ℹ️ Unexpected response type:", data.MessageType);
       return { 
         success: true, 
         message: 'Withdrawal submitted',
