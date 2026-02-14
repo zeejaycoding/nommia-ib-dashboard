@@ -2286,25 +2286,122 @@ export const getNudgeHistory = async () => {
   }
 };
 
-// ============= PAYOUT DETAILS =============
-export const savePayoutDetails = async (paymentDetails) => {
+// ============= OTP VERIFICATION (For Settings Page) =============
+/**
+ * Send OTP to user's email via Nommia backend
+ * @param {string} email - User's email address
+ * @param {string} type - Type of OTP: 'security' (for settings changes) or 'password' (for password reset)
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+export const sendOTP = async (email, type = 'security') => {
   try {
-    const partnerId = getSessionPartnerId() || paymentDetails.partnerId;
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/save`, {
+    console.log(`[OTP] Sending ${type} OTP to ${email}`);
+    
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ...paymentDetails,
-        partnerId
+        email: email,
+        type: type  // 'security' for settings, 'password' for password reset
       })
     });
     
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to send ${type} OTP`);
+    }
+    
+    const data = await response.json();
+    console.log(`[OTP] Successfully sent ${type} OTP to ${email}`);
+    return {
+      success: true,
+      message: data.message || `${type} code sent to ${email}`
+    };
+  } catch (error) {
+    console.error(`[OTP] Error sending ${type} OTP:`, error);
+    return {
+      success: false,
+      message: error.message
+    };
+  }
+};
+
+/**
+ * Verify OTP code from user's email
+ * @param {string} email - User's email address
+ * @param {string} code - OTP code entered by user (typically 6 digits)
+ * @param {string} type - Type of OTP: 'security' or 'password'
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+export const verifyOTP = async (email, code, type = 'security') => {
+  try {
+    console.log(`[OTP] Verifying ${type} OTP for ${email}`);
+    
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        code: code,
+        type: type
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Invalid or expired OTP code');
+    }
+    
+    const data = await response.json();
+    console.log(`[OTP] Successfully verified ${type} OTP for ${email}`);
+    return {
+      success: true,
+      message: data.message || `${type} verified successfully`
+    };
+  } catch (error) {
+    console.error(`[OTP] Error verifying ${type} OTP:`, error);
+    return {
+      success: false,
+      message: error.message
+    };
+  }
+};
+
+// ============= PAYOUT DETAILS (Nommia Backend) =============
+/**
+ * Save payout/payment details to Nommia backend
+ * Called after OTP verification in settings page
+ * @param {object} paymentDetails - Payment details object with bank/crypto info
+ * @returns {Promise<object>} - Response from Nommia backend
+ */
+export const savePayoutDetails = async (paymentDetails) => {
+  try {
+    const partnerId = getSessionPartnerId() || paymentDetails.partnerId;
+    const userEmail = localStorage.getItem('email') || paymentDetails.email;
+    
+    console.log(`[Payouts] Saving payout details for partnerId: ${partnerId}`);
+    
+    // Call Nommia backend instead of XValley
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/save`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}` // Include auth token if available
+      },
+      body: JSON.stringify({
+        partnerId: partnerId,
+        email: userEmail,
+        ...paymentDetails
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error || 'Failed to save payout details');
     }
     
     const data = await response.json();
+    console.log(`[Payouts] Successfully saved payout details`);
     return data;
   } catch (error) {
     console.error('[Payouts] Error saving:', error);
@@ -2312,19 +2409,35 @@ export const savePayoutDetails = async (paymentDetails) => {
   }
 };
 
+/**
+ * Retrieve payout details from Nommia backend
+ * @param {string} partnerId - Partner ID to fetch details for
+ * @returns {Promise<object|null>} - Payout details object or null if not found
+ */
 export const getPayoutDetails = async (partnerId = null) => {
   try {
     const id = partnerId || getSessionPartnerId();
     if (!id) throw new Error('No partner ID available');
     
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${id}`);
+    console.log(`[Payouts] Fetching payout details for partnerId: ${id}`);
+    
+    // Call Nommia backend instead of XValley
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/${id}`, {
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
     
     if (!response.ok) {
-      if (response.status === 404) return null;
+      if (response.status === 404) {
+        console.log(`[Payouts] No payout details found for partnerId: ${id}`);
+        return null;
+      }
       throw new Error('Failed to fetch payout details');
     }
     
     const data = await response.json();
+    console.log(`[Payouts] Successfully fetched payout details`);
     return data.data || null;
   } catch (error) {
     console.error('[Payouts] Error fetching:', error);
@@ -2332,18 +2445,30 @@ export const getPayoutDetails = async (partnerId = null) => {
   }
 };
 
+/**
+ * Delete payout details from Nommia backend
+ * @param {string} partnerId - Partner ID to delete details for
+ * @returns {Promise<object>} - Response from Nommia backend
+ */
 export const deletePayoutDetails = async (partnerId = null) => {
   try {
     const id = partnerId || getSessionPartnerId();
     if (!id) throw new Error('No partner ID available');
     
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/payouts/${id}`, {
-      method: 'DELETE'
+    console.log(`[Payouts] Deleting payout details for partnerId: ${id}`);
+    
+    // Call Nommia backend instead of XValley
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/${id}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      }
     });
     
     if (!response.ok) throw new Error('Failed to delete payout details');
     
     const data = await response.json();
+    console.log(`[Payouts] Successfully deleted payout details`);
     return data;
   } catch (error) {
     console.error('[Payouts] Error deleting:', error);

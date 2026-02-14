@@ -56,7 +56,9 @@ import {
   getAssetById,
   deleteAsset,
   sendNudgeEmail,
-  getNudgeHistory
+  getNudgeHistory,
+  sendOTP,
+  verifyOTP
 } from './api_integration_v2';
 
 import Login from './Login';
@@ -3247,23 +3249,15 @@ const SettingsView = () => {
       setShowSecurityModal(true);
   };
 
-  // 3. Send OTP (Mock)
+  // 3. Send OTP using API function
   const handleRequestOTP = async () => {
       try {
-          const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                  email: profile.email,
-                  type: 'security'
-              })
-          });
-          const data = await res.json();
-          if (data.success) {
-              alert(`Security Code sent to ${profile.email}`);
+          const result = await sendOTP(profile.email, verificationType === 'password' ? 'password' : 'security');
+          if (result.success) {
+              alert(`✅ ${result.message}`);
               setOtpStep('verify');
           } else {
-              alert('Error: ' + data.message);
+              alert('❌ Error: ' + result.message);
           }
       } catch (error) {
           alert('Failed to send OTP: ' + error.message);
@@ -3332,22 +3326,14 @@ const SettingsView = () => {
               }
           } else {
               // Save Payout Details Flow - Verify OTP first
-              const verifyRes = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ 
-                      email: profile.email,
-                      code: otpInput
-                  })
-              });
-              const verifyData = await verifyRes.json();
+              const result = await verifyOTP(profile.email, otpInput, 'security');
               
-              if (!verifyData.success) {
-                  return alert('Invalid OTP: ' + verifyData.message);
+              if (!result.success) {
+                  return alert('❌ Invalid OTP: ' + result.message);
               }
 
               try {
-                  await savePayoutDetails(payment);
+                  const saveResult = await savePayoutDetails(payment);
                   alert("✅ Success: Account details and payout methods saved securely.");
               } catch (error) {
                   alert("Error saving payout details: " + error.message);

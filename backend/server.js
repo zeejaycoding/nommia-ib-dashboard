@@ -691,6 +691,160 @@ app.delete('/api/payouts/:partnerId', async (req, res) => {
   }
 });
 
+// ============= ALIAS ENDPOINTS FOR PAYOUT (without 's') =============
+// These endpoints allow API calls to /api/payout/* (used by frontend api_integration_v2.js)
+app.post('/api/payout/save', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ 
+        error: 'Supabase not configured'
+      });
+    }
+
+    const { partnerId, email, bankName, accountNum, bic, usdtTrc, usdtErc, usdcPol, usdcErc, preferredMethod } = req.body;
+
+    // Validate required fields
+    if (!partnerId) {
+      return res.status(400).json({ 
+        error: 'Missing required field: partnerId'
+      });
+    }
+
+    console.log(`[Payout] Saving payout details for partner: ${partnerId}`);
+
+    // Upsert (insert or update) - map field names from frontend
+    const { data, error } = await supabase
+      .from('payout_details')
+      .upsert({
+        partner_id: partnerId,
+        email: email || null,
+        bank_name: bankName || null,
+        account_number: accountNum || null,
+        bic: bic || null,
+        usdt_trc20: usdtTrc || null,
+        usdt_erc20: usdtErc || null,
+        usdc_polygon: usdcPol || null,
+        usdc_erc20: usdcErc || null,
+        preferred_method: preferredMethod || null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'partner_id' })
+      .select();
+
+    if (error) {
+      console.error('[Payout] ❌ Save failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to save payout details',
+        details: error.message
+      });
+    }
+
+    console.log('[Payout] ✅ Saved successfully');
+    res.status(200).json({
+      success: true,
+      message: 'Payout details saved successfully',
+      data: data[0]
+    });
+  } catch (err) {
+    console.error('[Payout] ❌ Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+app.get('/api/payout/:partnerId', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ 
+        error: 'Supabase not configured'
+      });
+    }
+
+    const { partnerId } = req.params;
+
+    if (!partnerId) {
+      return res.status(400).json({ 
+        error: 'Missing required parameter: partnerId'
+      });
+    }
+
+    console.log(`[Payout] Fetching payout details for partner: ${partnerId}`);
+
+    const { data, error } = await supabase
+      .from('payout_details')
+      .select('*')
+      .eq('partner_id', partnerId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      // PGRST116 = no rows found (it's okay)
+      console.error('[Payout] ❌ Fetch failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to fetch payout details',
+        details: error.message
+      });
+    }
+
+    console.log('[Payout] ✅ Fetched successfully');
+    res.status(200).json({
+      success: true,
+      data: data || null,
+      message: data ? 'Payout details found' : 'No payout details saved yet'
+    });
+  } catch (err) {
+    console.error('[Payout] ❌ Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+app.delete('/api/payout/:partnerId', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ 
+        error: 'Supabase not configured'
+      });
+    }
+
+    const { partnerId } = req.params;
+
+    if (!partnerId) {
+      return res.status(400).json({ 
+        error: 'Missing required parameter: partnerId'
+      });
+    }
+
+    console.log(`[Payout] Deleting payout details for partner: ${partnerId}`);
+
+    const { error } = await supabase
+      .from('payout_details')
+      .delete()
+      .eq('partner_id', partnerId);
+
+    if (error) {
+      console.error('[Payout] ❌ Delete failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to delete payout details',
+        details: error.message
+      });
+    }
+
+    console.log('[Payout] ✅ Deleted successfully');
+    res.status(200).json({
+      success: true,
+      message: 'Payout details deleted successfully'
+    });
+  } catch (err) {
+    console.error('[Payout] ❌ Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
 
 app.post('/api/2fa/setup', async (req, res) => {
   try {
