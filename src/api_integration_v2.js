@@ -1620,9 +1620,81 @@ export const resetUserPassword = async (username) => {
   return { success: true };
 };
 
-export const submitWithdrawalRequest = async (data) => {
-  // Stub
-  return { success: true };
+/**
+ * Submit withdrawal request to XValley via WebSocket Admin API
+ * Sends withdrawal to com.fxplayer.deposit topic
+ * Will appear in XValley admin dashboard for actionable withdrawal approval
+ * @param {object} withdrawalData - Withdrawal details
+ * @returns {Promise<{success: boolean, message: string, data?: object}>}
+ */
+export const submitWithdrawalRequest = async (withdrawalData) => {
+  if (!wsSession) {
+    console.error("[Withdrawal] WebSocket not connected");
+    throw new Error("Not connected to XValley WebSocket");
+  }
+  
+  try {
+    console.log("[Withdrawal] Submitting withdrawal request:", withdrawalData);
+    
+    // Build withdrawal message per XValley Backoffice API spec (page 18-19)
+    // TS: 2 = Withdrawal (vs 1 = Deposit)
+    const msg = {
+      MessageType: 100,
+      Username: wsSessionId,
+      Messages: [{
+        TA: withdrawalData.amount || 0,           // TransactionAmount
+        AA: withdrawalData.amount || 0,           // AccountAmount
+        F: withdrawalData.fee || 0,               // Fee
+        R: withdrawalData.rate || 1,              // Rate
+        D: withdrawalData.date || new Date().toISOString(),  // Date
+        TId: withdrawalData.typeId || 1,          // Type (1=BankWire, 2=Crypto, etc)
+        TCId: withdrawalData.currencyId || 1,     // Transaction Currency
+        ACId: withdrawalData.accountCurrencyId || 1,  // Account Currency
+        St: withdrawalData.state || 1,            // State (1=Pending)
+        TrId: withdrawalData.accountId,           // TraderAccountId (required)
+        In: withdrawalData.reference || "",       // Reference/Invoice
+        TS: 2                                     // Side: 2 = Withdrawal
+      }]
+    };
+    
+    console.log("[Withdrawal] Sending to XValley deposit topic:", JSON.stringify(msg, null, 2));
+    
+    // Call XValley WebSocket deposit topic
+    const result = await wsSession.call('com.fxplayer.deposit', [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    console.log("[Withdrawal] Response from XValley:", JSON.stringify(data, null, 2));
+    
+    // Check response status
+    if (data.MessageType === 200) {
+      // MessageType 200 = OK
+      console.log("[Withdrawal] ✅ Withdrawal submitted successfully to XValley admin");
+      return { 
+        success: true, 
+        message: 'Withdrawal submitted successfully. Check your XValley admin dashboard.',
+        data: data 
+      };
+    } else if (data.MessageType === -3) {
+      // MessageType -3 = Error
+      const errorMsg = data.Messages?.[0] || 'Withdrawal submission failed';
+      console.error("[Withdrawal] ❌ XValley error:", errorMsg);
+      throw new Error(errorMsg);
+    } else {
+      // Unexpected response
+      console.log("[Withdrawal] ℹ️ Unexpected response type:", data.MessageType);
+      return { 
+        success: true, 
+        message: 'Withdrawal submitted',
+        data: data 
+      };
+    }
+  } catch (error) {
+    console.error("[Withdrawal] ❌ Error submitting withdrawal:", error);
+    return { 
+      success: false, 
+      message: error.message || 'Failed to submit withdrawal request'
+    };
+  }
 };
 
 export const fetchWithdrawalsHistory = async () => [];
