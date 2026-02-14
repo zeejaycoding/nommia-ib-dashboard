@@ -21,16 +21,16 @@ const Login = ({ onLoginSuccess }) => {
 
   const check2FAEnabled = async (user) => {
     try {
-      console.log('[Login] Checking 2FA status for user:', user);
+      // console.log('[Login] Checking 2FA status for user:', user);
       const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: user })
       });
       const data = await res.json();
-      console.log('[Login] 2FA check response:', data);
+      // console.log('[Login] 2FA check response:', data);
       const is2FAEnabled = data.success && data.enabled === true;
-      console.log('[Login] 2FA enabled for user:', is2FAEnabled);
+      // console.log('[Login] 2FA enabled for user:', is2FAEnabled);
       return is2FAEnabled;
     } catch (err) {
       console.warn('[Login 2FA Check] Error:', err.message);
@@ -44,24 +44,24 @@ const Login = ({ onLoginSuccess }) => {
     setError('');
 
     try {
-      console.log('[Login] Attempting login with username:', username);
+      // console.log('[Login] Attempting login with username:', username);
       // Call the API integration layer
       const token = await loginAndGetToken(username, password);
       
       // If successful, check if 2FA is enabled
       if (token) {
-        console.log('[Login] Login successful, token received. Checking 2FA...');
+        // console.log('[Login] Login successful, token received. Checking 2FA...');
         const is2FAEnabled = await check2FAEnabled(username);
         
         if (is2FAEnabled) {
-          console.log('[Login] 2FA is enabled, showing modal');
+          // console.log('[Login] 2FA is enabled, showing modal');
           // 2FA is enabled - show modal instead of logging in
           setPendingToken(token);
           setPendingUsername(username);
           setShow2FAModal(true);
           setTwoFACode('');
         } else {
-          console.log('[Login] 2FA is disabled, proceeding with normal login');
+          // console.log('[Login] 2FA is disabled, proceeding with normal login');
           // 2FA is disabled - proceed with login
           onLoginSuccess(token, username);
         }
@@ -84,7 +84,7 @@ const Login = ({ onLoginSuccess }) => {
     setError('');
 
     try {
-      console.log('[Login 2FA] Verifying code for user:', pendingUsername);
+      // console.log('[Login 2FA] Verifying code for user:', pendingUsername);
       const res = await fetch(`${API_CONFIG.BACKEND_URL}/api/2fa/verify-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -95,10 +95,10 @@ const Login = ({ onLoginSuccess }) => {
       });
 
       const data = await res.json();
-      console.log('[Login 2FA] Verify response:', data);
+      // console.log('[Login 2FA] Verify response:', data);
 
       if (data.success) {
-        console.log('[Login 2FA] Code verified, completing login');
+        // console.log('[Login 2FA] Code verified, completing login');
         // 2FA verified - complete login
         setShow2FAModal(false);
         setTwoFACode('');

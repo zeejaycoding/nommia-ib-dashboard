@@ -154,9 +154,9 @@ const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[Email] Sending (attempt ${attempt}/${maxRetries})...`);
+      // console.log(`[Email] Sending (attempt ${attempt}/${maxRetries})...`);
       const info = await transporter.sendMail(mailOptions);
-      console.log(`[Email] ✅ Sent successfully (Message ID: ${info.messageId})`);
+      // console.log(`[Email] ✅ Sent successfully (Message ID: ${info.messageId})`);
       return info;
     } catch (error) {
       lastError = error;
@@ -165,7 +165,7 @@ const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
       if (attempt < maxRetries) {
         // Exponential backoff: 1s, 2s, 4s
         const delayMs = Math.pow(2, attempt - 1) * 1000;
-        console.log(`[Email] Retrying in ${delayMs}ms...`);
+        // console.log(`[Email] Retrying in ${delayMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
@@ -482,7 +482,7 @@ app.post('/api/nudges/send', async (req, res) => {
     const template = emailTemplates[nudgeType];
     const emailBody = template.getBody(recipientName, referrerName);
 
-    console.log(`[Nudge] Sending ${nudgeType} to ${recipientEmail}...`);
+    // console.log(`[Nudge] Sending ${nudgeType} to ${recipientEmail}...`);
 
     // Send email via Brevo SMTP with retry logic
     const info = await sendEmailWithRetry({
@@ -493,7 +493,7 @@ app.post('/api/nudges/send', async (req, res) => {
       text: emailBody
     });
 
-    console.log(`[Nudge] ✅ Nudge sent to ${recipientEmail} via Brevo SMTP`);
+    // console.log(`[Nudge] ✅ Nudge sent to ${recipientEmail} via Brevo SMTP`);
 
     res.status(200).json({
       success: true,
@@ -555,7 +555,7 @@ app.post('/api/payouts/save', async (req, res) => {
       });
     }
 
-    console.log(`[Payouts] Saving payout details for partner: ${partnerId}`);
+    // console.log(`[Payouts] Saving payout details for partner: ${partnerId}`);
 
     // Upsert (insert or update)
     const { data, error } = await supabase
@@ -614,7 +614,7 @@ app.get('/api/payouts/:partnerId', async (req, res) => {
       });
     }
 
-    console.log(`[Payouts] Fetching payout details for partner: ${partnerId}`);
+    // console.log(`[Payouts] Fetching payout details for partner: ${partnerId}`);
 
     const { data, error } = await supabase
       .from('payout_details')
@@ -662,7 +662,7 @@ app.delete('/api/payouts/:partnerId', async (req, res) => {
       });
     }
 
-    console.log(`[Payouts] Deleting payout details for partner: ${partnerId}`);
+    // console.log(`[Payouts] Deleting payout details for partner: ${partnerId}`);
 
     const { error } = await supabase
       .from('payout_details')
@@ -710,7 +710,7 @@ app.post('/api/payout/save', async (req, res) => {
       });
     }
 
-    console.log(`[Payout] Saving payout details for partner: ${partnerId}`);
+    // console.log(`[Payout] Saving payout details for partner: ${partnerId}`);
 
     // Upsert (insert or update) - map field names from frontend
     const { data, error } = await supabase
@@ -769,7 +769,7 @@ app.get('/api/payout/:partnerId', async (req, res) => {
       });
     }
 
-    console.log(`[Payout] Fetching payout details for partner: ${partnerId}`);
+    // console.log(`[Payout] Fetching payout details for partner: ${partnerId}`);
 
     const { data, error } = await supabase
       .from('payout_details')
@@ -817,7 +817,7 @@ app.delete('/api/payout/:partnerId', async (req, res) => {
       });
     }
 
-    console.log(`[Payout] Deleting payout details for partner: ${partnerId}`);
+    // console.log(`[Payout] Deleting payout details for partner: ${partnerId}`);
 
     const { error } = await supabase
       .from('payout_details')
@@ -865,9 +865,9 @@ app.post('/api/2fa/setup', async (req, res) => {
       `otpauth://totp/Nommia:${username}?secret=${secret.base32}&issuer=Nommia`
     )}`;
     
-    console.log(`[2FA] Setup initiated for user: ${username}`);
-    console.log(`[2FA] Secret: ${secret.base32}`);
-    console.log(`[2FA] QR URL generated: ${qrCodeUrl.substring(0, 80)}...`);
+    // console.log(`[2FA] Setup initiated for user: ${username}`);
+    // console.log(`[2FA] Secret: ${secret.base32}`);
+    // console.log(`[2FA] QR URL generated: ${qrCodeUrl.substring(0, 80)}...`);
     
     // Save to database (not enabled yet - will be enabled after verification)
     if (supabase) {
@@ -885,7 +885,7 @@ app.post('/api/2fa/setup', async (req, res) => {
           console.warn(`[2FA] Warning saving to DB: ${error.message}`);
           // Don't fail - still return the secret to user
         } else {
-          console.log(`[2FA] Secret saved to database for ${username}`);
+      // console.log(`[2FA] Secret saved to database for ${username}`);
         }
       } catch (dbErr) {
         console.warn(`[2FA] Database error: ${dbErr.message}`);
@@ -933,7 +933,7 @@ app.post('/api/2fa/verify', async (req, res) => {
     });
     
     if (!verified) {
-      console.log(`[2FA] Verification failed for user: ${username} - invalid code`);
+      // console.log(`[2FA] Verification failed for user: ${username} - invalid code`);
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid authenticator code. Check your app and try again.' 
@@ -955,14 +955,14 @@ app.post('/api/2fa/verify', async (req, res) => {
           console.warn(`[2FA] Warning enabling in DB: ${error.message}`);
           // Still return success to user
         } else {
-          console.log(`[2FA] 2FA enabled for user: ${username}`);
+          // console.log(`[2FA] 2FA enabled for user: ${username}`);
         }
       } catch (dbErr) {
         console.warn(`[2FA] Database error enabling: ${dbErr.message}`);
       }
     }
     
-    console.log(`[2FA] Verified and enabled for user: ${username}`);
+    // console.log(`[2FA] Verified and enabled for user: ${username}`);
     
     res.status(200).json({
       success: true,
@@ -1025,14 +1025,14 @@ app.post('/api/2fa/verify-login', async (req, res) => {
     });
     
     if (!verified) {
-      console.log(`[2FA Login] Invalid code for user: ${username}`);
+      // console.log(`[2FA Login] Invalid code for user: ${username}`);
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid authenticator code.' 
       });
     }
     
-    console.log(`[2FA Login] Verified successfully for user: ${username}`);
+    // console.log(`[2FA Login] Verified successfully for user: ${username}`);
     
     res.status(200).json({
       success: true,
@@ -1072,7 +1072,7 @@ app.post('/api/2fa/disable', async (req, res) => {
           console.warn(`[2FA] Warning disabling: ${error.message}`);
           // Still return success
         } else {
-          console.log(`[2FA] Disabled for user: ${username}`);
+          // console.log(`[2FA] Disabled for user: ${username}`);
         }
       } catch (dbErr) {
         console.warn(`[2FA] Database error disabling: ${dbErr.message}`);
@@ -1116,7 +1116,7 @@ app.post('/api/2fa/check', async (req, res) => {
       .single();
     
     const is2FAEnabled = data && data.enabled === true;
-    console.log(`[2FA Check] User ${username} - 2FA enabled: ${is2FAEnabled}`);
+    // console.log(`[2FA Check] User ${username} - 2FA enabled: ${is2FAEnabled}`);
     
     res.status(200).json({
       success: true,
@@ -1142,14 +1142,14 @@ const otpStore = new Map();
  */
 app.post('/api/otp/send', async (req, res) => {
   try {
-    console.log('[OTP Send] Request received. Body:', JSON.stringify(req.body));
+    // console.log('[OTP Send] Request received. Body:', JSON.stringify(req.body));
     
     let { email, type } = req.body;
 
     // Trim email before processing
     email = email ? email.trim() : '';
 
-    console.log(`[OTP Send] Extracted email: "${email}", type: "${type}"`);
+    // console.log(`[OTP Send] Extracted email: "${email}", type: "${type}"`);
 
     // Validate email
     if (!email || email === '') {
@@ -1165,7 +1165,7 @@ app.post('/api/otp/send', async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email.toLowerCase())) {
       console.warn(`[OTP Send] ❌ Invalid email format: "${email}"`);
-      console.log(`[OTP Send] Debug - email length: ${email.length}, chars: ${email.split('').map(c => `${c}(${c.charCodeAt(0)})`).join(', ')}`);
+      // console.log(`[OTP Send] Debug - email length: ${email.length}, chars: ${email.split('').map(c => `${c}(${c.charCodeAt(0)})`).join(', ')}`) ;
       return res.status(400).json({ 
         error: 'Invalid email format',
         received: email,
@@ -1186,7 +1186,7 @@ app.post('/api/otp/send', async (req, res) => {
       type: type || 'verification'
     });
 
-    console.log(`[OTP] ✅ Generated OTP for ${email}: ${otp} (expires in 10 min)`);
+    // console.log(`[OTP] ✅ Generated OTP for ${email}: ${otp} (expires in 10 min)`);
 
     // Send OTP via email using nodemailer + Brevo SMTP
     try {
@@ -1231,7 +1231,7 @@ app.post('/api/otp/send', async (req, res) => {
       if (transporter) {
         try {
           await sendEmailWithRetry(mailOptions);
-          console.log(`[OTP] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
+          // console.log(`[OTP] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
         } catch (sendErr) {
           console.warn(`[OTP] ⚠️ Failed to send OTP email after 3 retries: ${sendErr.message}`);
           // Don't fail the request if email fails - OTP was generated and stored
@@ -1303,7 +1303,7 @@ app.post('/api/otp/verify', async (req, res) => {
     // OTP verified - clean up
     otpStore.delete(email);
 
-    console.log(`[OTP] Successfully verified OTP for ${email}`);
+    // console.log(`[OTP] Successfully verified OTP for ${email}`);
 
     res.status(200).json({
       success: true,
@@ -1383,7 +1383,7 @@ app.post('/api/password/reset', async (req, res) => {
       });
     }
 
-    console.log(`[Password Reset] OTP verified for ${email}. Frontend will now update password via XValley API.`);
+    // console.log(`[Password Reset] OTP verified for ${email}. Frontend will now update password via XValley API.`);
 
     res.status(200).json({
       success: true,
@@ -1417,8 +1417,8 @@ const host = '0.0.0.0';
 const server = app.listen(port, host, () => {
   console.log('\n========================================');
   console.log(`[Server] ✅ RUNNING on http://${host}:${port}`);
-  console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log('[Server] Ready to accept requests');
+ // console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
+  //console.log('[Server] Ready to accept requests');
   console.log('========================================\n');
 });
 

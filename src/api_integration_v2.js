@@ -88,7 +88,7 @@ export const loginAndGetToken = async (username, password) => {
     
     // XValley returns refresh_token from /token endpoint
     authToken = data.refresh_token || data.refreshToken || data.token || data.access_token;
-    console.log("Auth token obtained:", authToken ? "Yes" : "No");
+    // console.log("Auth token obtained:", authToken ? "Yes" : "No");
     return authToken;
   } catch (error) {
     console.error("Login Error:", error);
@@ -101,7 +101,7 @@ export const fetchServerConfig = async () => {
   try {
     const response = await fetch(`${API_CONFIG.API_BASE_URL}/settings/servers`);
     if (!response.ok) {
-      console.log("Server config not available, using defaults");
+      // console.log("Server config not available, using defaults");
       return null;
     }
     const data = await response.json();
@@ -117,7 +117,7 @@ export const fetchServerConfig = async () => {
     // Update WS_URL if we got AdminServer from config (only in production)
     if (!import.meta.env.DEV && serverConfig.AdminServer) {
       API_CONFIG.WS_URL = serverConfig.AdminServer.url;
-      console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
+      // console.log("Updated WS_URL to:", API_CONFIG.WS_URL);
     }
     return serverConfig;
   } catch (e) {
@@ -145,18 +145,18 @@ export const connectWebSocket = (token) => {
     });
 
     wsConnection.onopen = async (session) => {
-      console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
+      // console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
       wsSession = session;
       
       try {
         // PING to authenticate
         const pingMsg = JSON.stringify({ token: authToken, host: API_CONFIG.BROKER_HOST });
-        console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
+        // console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
         
         const result = await session.call(API_CONFIG.TOPICS.PING, [pingMsg]);
         const data = typeof result === 'string' ? JSON.parse(result) : result;
         
-        console.log("PING Response:", JSON.stringify(data, null, 2));
+        // console.log("PING Response:", JSON.stringify(data, null, 2));
         
         if (data.MessageType === -3) {
           console.error("Auth Error:", data.Messages);
@@ -173,28 +173,28 @@ export const connectWebSocket = (token) => {
         
         // Store roles from PING response
         sessionRoles = Array.isArray(data.Messages?.[1]) ? data.Messages[1] : [];
-        console.log("Session ID (username):", wsSessionId);
-        console.log("Roles:", sessionRoles);
+        // console.log("Session ID (username):", wsSessionId);
+        // console.log("Roles:", sessionRoles);
         
         // PartnerId is at Messages[3] as a string
         const partnerIdStr = data.Messages?.[3];
         if (partnerIdStr) {
           sessionPartnerId = parseInt(partnerIdStr, 10);
-          console.log("Extracted PartnerId:", sessionPartnerId);
+          // console.log("Extracted PartnerId:", sessionPartnerId);
         }
         
         // CompanyId is at Messages[4] as a string
         const companyIdStr = data.Messages?.[4];
         if (companyIdStr) {
           sessionCompanyId = parseInt(companyIdStr, 10);
-          console.log("Extracted CompanyId:", sessionCompanyId);
+          // console.log("Extracted CompanyId:", sessionCompanyId);
         }
         
         if (!sessionPartnerId) {
           console.warn("No PartnerId found in PING response - this IB may not have partner access");
         }
         
-        console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
+        // console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
         resolve(session);
       } catch (err) {
         console.error("PING Error:", err);
@@ -203,8 +203,8 @@ export const connectWebSocket = (token) => {
     };
 
     wsConnection.onclose = (reason) => {
-      console.log("WebSocket Closed:", reason);
-      console.log("Will attempt to reconnect...");
+      // console.log("WebSocket Closed:", reason);
+      // console.log("Will attempt to reconnect...");
       wsSession = null;
       // Don't set wsConnection to null - let autobahn handle reconnection
     };
@@ -349,7 +349,7 @@ export const logRoleChange = (fromRole, toRole, allowed) => {
   const username = wsSessionId || 'unknown';
   
   if (allowed) {
-    console.log(`[ROLE_HIERARCHY] ✅ ${timestamp} | User: ${username} | Highest: ${highestRole} | Changed: ${fromRole} → ${toRole}`);
+    // console.log(`[ROLE_HIERARCHY] ✅ ${timestamp} | User: ${username} | Highest: ${highestRole} | Changed: ${fromRole} → ${toRole}`);
   } else {
     console.warn(`[ROLE_HIERARCHY] ⚠️ ${timestamp} | User: ${username} | Highest: ${highestRole} | Blocked: ${fromRole} → ${toRole} (UNAUTHORIZED)`);
   }
@@ -363,7 +363,7 @@ export const logRoleChange = (fromRole, toRole, allowed) => {
 export const fetchAllLeads = async (pageSize = 5000) => {
   if (!wsSession) throw new Error("Not connected");
   
-  console.log("[fetchAllLeads] Fetching all leads/clients from platform...");
+  // console.log("[fetchAllLeads] Fetching all leads/clients from platform...");
   
   try {
     // Request with NO filters to get all clients
@@ -376,22 +376,22 @@ export const fetchAllLeads = async (pageSize = 5000) => {
       AdminType: 2  // 2 = Customers/Leads
     };
     
-    console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
+    // console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
     const wrapper = data?.Messages?.[0];
     const clients = wrapper?.Messages || [];
     
-    console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`);
+    // console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`) ;
     
     // Log sample clients with referrer data
-    if (clients.length > 0) {
-      console.log("[fetchAllLeads] Sample clients with referrer info:");
-      clients.slice(0, 5).forEach((c, idx) => {
-        console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
-      });
-    }
+    // if (clients.length > 0) {
+    //   console.log("[fetchAllLeads] Sample clients with referrer info:");
+    //   clients.slice(0, 5).forEach((c, idx) => {
+    //     console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
+    //   });
+    // }
     
     // Map to consistent format
     return clients.map(lead => {
@@ -447,7 +447,7 @@ export const fetchAllLeads = async (pageSize = 5000) => {
 export const fetchIBClients = async (usernames = []) => {
   if (!wsSession) throw new Error("Not connected");
   
-  console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
+  // console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
   
   // Add CompanyId filter per API docs (p7-9): correct format is Filter, FilterComparison, FilterType, FilterValueType
   // This is critical to prevent loading customers from all companies
@@ -470,7 +470,7 @@ export const fetchIBClients = async (usernames = []) => {
     AdminType: 2  // 2 = Customers (per docs p8)
   };
   
-  console.log("Leads request:", JSON.stringify(msg, null, 2));
+  // console.log("Leads request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -479,11 +479,11 @@ export const fetchIBClients = async (usernames = []) => {
   const clients = wrapper?.Messages || [];
   
   if (!clients.length) {
-    console.log("No clients found - Response:", JSON.stringify(data, null, 2));
+    // console.log("No clients found - Response:", JSON.stringify(data, null, 2));
     return [];
   }
   
-  console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`);
+  // console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`) ;
   
   // Filter by usernames if provided
   let filteredClients = clients;
@@ -493,12 +493,12 @@ export const fetchIBClients = async (usernames = []) => {
       const username = (c.UserName || c.A || '').toLowerCase();
       return usernameSet.has(username);
     });
-    console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
+    // console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
   }
   
   // Log first client to see field names
   if (filteredClients[0]) {
-    console.log("Sample client data:", JSON.stringify(filteredClients[0], null, 2));
+    // console.log("Sample client data:", JSON.stringify(filteredClients[0], null, 2));
   }
   
   // Map to client objects with all fields from docs (p8-9)
@@ -562,7 +562,7 @@ export const fetchIBClients = async (usernames = []) => {
 export const fetchAllClientsForNetwork = async () => {
   if (!wsSession) throw new Error("Not connected");
   
-  console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
+  // console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
   
   try {
     // Step 1: Fetch all trading account (REAL ONLY - AccountType: "1")
@@ -583,11 +583,11 @@ export const fetchAllClientsForNetwork = async () => {
     const accounts = wrapper?.Messages || [];
     
     if (!accounts.length) {
-      console.log("[fetchAllClientsForNetwork] No trading accounts found");
+      // console.log("[fetchAllClientsForNetwork] No trading accounts found");
       return [];
     }
     
-    console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
+    // console.log(`[fetchAllClientsForNetwork] Found ${accounts.length} total trading accounts`);
     
     // Step 2: Group accounts by trader and aggregate financial data
     const clientMap = {};
@@ -632,7 +632,7 @@ export const fetchAllClientsForNetwork = async () => {
     });
     
     // Step 3: Get closed trades for volume and commission
-    console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
+    // console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
     
     const tradesMsg = {
       MessageType: 100,
@@ -652,7 +652,7 @@ export const fetchAllClientsForNetwork = async () => {
     const tradesWrapper = tradesData?.Messages?.[0];
     const trades = tradesWrapper?.Messages || [];
     
-    console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
+    // console.log(`[fetchAllClientsForNetwork] Found ${trades.length} closed trades for volume/commission`);
     
     // Group trades by username and aggregate
     const tradesByUsername = {};
@@ -681,33 +681,33 @@ export const fetchAllClientsForNetwork = async () => {
     });
     
     const allClients = Object.values(clientMap);
-    console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
+    // console.log(`[fetchAllClientsForNetwork] Grouped into ${allClients.length} unique traders with aggregated data`);
     
     // Log samples
-    const samples = allClients.slice(0, 5);
-    samples.forEach((c, idx) => {
-      console.log(`Sample client ${idx + 1}: ${c.username}, partnerId=${c.partnerId}, deposit=$${c.deposit}, volume=${c.volume}, kyc=${c.kycStatus}`);
-    });
+    // const samples = allClients.slice(0, 5);
+    // samples.forEach((c, idx) => {
+    //   console.log(`Sample client ${idx + 1}: ${c.username}, partnerId=${c.partnerId}, deposit=$${c.deposit}, volume=${c.volume}, kyc=${c.kycStatus}`);
+    // });
     
     // Debug: Log full raw trader data for first few clients to understand available fields
-    console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
-    samples.forEach((c, idx) => {
-      const raw = c._raw;
-      if (raw) {
-        console.log(`Trader ${idx + 1} (${c.username}):`, {
-          Id: raw.I,
-          Alias: raw.A,
-          PartnerId: raw.PartnerId,
-          Referrer: raw.Referrer,
-          ReferrerId: raw.ReferrerId,
-          Company: raw.Company?.Name,
-          CompanyId: raw.CompanyId,
-          State: raw.State,
-          Approved: raw.Approved,
-          Keys: Object.keys(raw).slice(0, 20)
-        });
-      }
-    });
+    // console.log("[fetchAllClientsForNetwork] Full raw trader data samples:");
+    // samples.forEach((c, idx) => {
+    //   const raw = c._raw;
+    //   if (raw) {
+    //     console.log(`Trader ${idx + 1} (${c.username}):`, {
+    //       Id: raw.I,
+    //       Alias: raw.A,
+    //       PartnerId: raw.PartnerId,
+    //       Referrer: raw.Referrer,
+    //       ReferrerId: raw.ReferrerId,
+    //       Company: raw.Company?.Name,
+    //       CompanyId: raw.CompanyId,
+    //       State: raw.State,
+    //       Approved: raw.Approved,
+    //       Keys: Object.keys(raw).slice(0, 20)
+    //     });
+    //   }
+    // });
     
     return allClients;
   } catch (error) {
@@ -723,7 +723,7 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
   if (!wsSession) throw new Error("Not connected");
   
   const pid = partnerId || sessionPartnerId;
-  console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
+  // console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
   
   // Note: T.PartnerId filter doesn't work server-side
   // Fetch all account types (12 = real + demo) and filter client-side
@@ -738,7 +738,7 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
     Skip: 0
   };
   
-  console.log("Traders request:", JSON.stringify(msg, null, 2));
+  // console.log("Traders request:", JSON.stringify(msg, null, 2));
   const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -747,7 +747,7 @@ export const fetchTradingAccountsBulk = async (partnerId) => {
   const accounts = wrapper?.Messages || [];
   
   if (!accounts.length) {
-    console.log("No trading accounts found - Response:", JSON.stringify(data, null, 2));
+    // console.log("No trading accounts found - Response:", JSON.stringify(data, null, 2));
     return [];
   }
   
@@ -821,7 +821,7 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
     };
     
     console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-    console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
+    // console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
     const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
@@ -906,7 +906,7 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   };
   
   console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-  console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
+  // console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
   const result = await wsSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
   const data = typeof result === 'string' ? JSON.parse(result) : result;
   
@@ -915,7 +915,7 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   const transactions = wrapper?.Messages || data?.Messages || [];
   
   if (!transactions.length) {
-    console.log("[fetchTransactionsBulk] No transactions found - Response:", JSON.stringify(data, null, 2));
+    // console.log("[fetchTransactionsBulk] No transactions found - Response:", JSON.stringify(data, null, 2));
     return [];
   }
   
@@ -924,19 +924,19 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   // Log first transaction to understand structure
   if (transactions[0]) {
     const t = transactions[0];
-    console.log("[fetchTransactionsBulk] Sample transaction fields:", Object.keys(t));
-    console.log("[fetchTransactionsBulk] Sample transaction data:", {
-      Id: t.Id,
-      DA: t.DA,  // Deposit Amount (reference)
-      AA: t.AA,  // Account Amount (actual deposit)
-      SA: t.SA,  // Send Amount
-      TS: t.TS,  // Transaction Side
-      D: t.D,    // Date
-      IsFiat: t.IsFiat,  // Is Fiat transaction
-      'T.Name': t.T?.Name,  // Provider name
-      'TA.T': t.TA?.T,  // Trader info
-      'TrA.T': t.TrA?.T  // Alternative trader info
-    });
+    // console.log("[fetchTransactionsBulk] Sample transaction fields:", Object.keys(t));
+    // console.log("[fetchTransactionsBulk] Sample transaction data:", {
+   //   Id: t.Id,
+    //  DA: t.DA,  // Deposit Amount (reference)
+   //   AA: t.AA,  // Account Amount (actual deposit)
+     // SA: t.SA,  // Send Amount
+      //TS: t.TS,  // Transaction Side
+  //    D: t.D,    // Date
+    //  IsFiat: t.IsFiat,  // Is Fiat transaction
+      //'T.Name': t.T?.Name,  // Provider name
+     // 'TA.T': t.TA?.T,  // Trader info
+     // 'TrA.T': t.TrA?.T  // Alternative trader info
+   // });
   }
   
   // Calculate totals before filtering
@@ -947,18 +947,18 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
   // Per XValley docs: AA = Deposited amount (Account Amount), DA = Reference amount
   // Debug first transaction to see all field values
   if (transactions[0]) {
-    console.log("[fetchTransactionsBulk] First transaction fields DEBUG:", {
-      Id: transactions[0].Id,
-      TS: transactions[0].TS,  // Side
-      TSN: transactions[0].TSN,  // Type name
-      D: transactions[0].D,  // Date
-      DA: transactions[0].DA,  // Deposit Amount
-      AA: transactions[0].AA,  // Account Amount
-      SA: transactions[0].SA,  // Send Amount
-      'T.Name': transactions[0].T?.Name,  // Provider
-      IsFiat: transactions[0].IsFiat,  // Is Fiat
-      Reason: transactions[0].Reason  // Reason code
-    });
+    // console.log("[fetchTransactionsBulk] First transaction fields DEBUG:", {
+ //     Id: transactions[0].Id,
+  //    TS: transactions[0].TS,  // Side
+   //   TSN: transactions[0].TSN,  // Type name
+   //   D: transactions[0].D,  // Date
+    //  DA: transactions[0].DA,  // Deposit Amount
+    //  AA: transactions[0].AA,  // Account Amount
+    //  SA: transactions[0].SA,  // Send Amount
+    //  'T.Name': transactions[0].T?.Name,  // Provider
+    //  IsFiat: transactions[0].IsFiat,  // Is Fiat
+    //  Reason: transactions[0].Reason  // Reason code
+    //});
   }
   
   const mapped = transactions.map(t => {
@@ -1078,8 +1078,8 @@ const isRecentDate = (dateStr, days = 30) => {
  */
 export const fetchCompleteClientData = async (forcePartnerId = null) => {
   const partnerId = forcePartnerId || sessionPartnerId;
-  console.log("=== Fetching Complete Client Data ===");
-  console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
+  // console.log("=== Fetching Complete Client Data ===");
+  // console.log("Using PartnerId:", partnerId, forcePartnerId ? "(forced)" : "(session)");
   
   // Step 1: Get ALL trading accounts for this partner
   const tradingAccounts = await fetchTradingAccountsBulk(partnerId);
@@ -1092,7 +1092,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   
   // Log a full sample to understand structure
   if (tradingAccounts[0]) {
-    console.log("Full sample trading account:", JSON.stringify(tradingAccounts[0], null, 2).substring(0, 1500));
+    // console.log("Full sample trading account:", JSON.stringify(tradingAccounts[0], null, 2).substring(0, 1500));
   }
   
   // Step 2: Group trading accounts by username and aggregate data
@@ -1251,7 +1251,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     const comm = parseFloat(t.commission) || 0;  // ← 100% from XValley API
     
     if (idx < 3) {
-      console.log(`Trade ${idx + 1}:`, { username, volume: vol, xvalleyCommission: comm, instrument: t.instrument });
+      // console.log(`Trade ${idx + 1}:`, { username, volume: vol, xvalleyCommission: comm, instrument: t.instrument });
     }
     
     if (!username || username === 'Unknown') return;
@@ -1396,7 +1396,7 @@ With Lots: ${withLots}
   
   // Log first 5 clients for verification with all status fields
   realClients.slice(0, 5).forEach((c, i) => {
-    console.log(`Client ${i + 1}:`, {
+    /* console.log(`Client ${i + 1}:`, {
       username: c.username,
       country: c.country,
       // Activity
@@ -1416,9 +1416,10 @@ With Lots: ${withLots}
       lots: c.lots,
       tradeCount: c.tradeCount
     });
+    */
   });
   
-  console.log("=== Client Data Complete ===");
+  // console.log("=== Client Data Complete ===");
   return realClients;
 };
 
@@ -1766,7 +1767,7 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
   }
   
   try {
-    console.log("[Withdrawal] Submitting withdrawal request:", withdrawalData);
+    // console.log("[Withdrawal] Submitting withdrawal request:", withdrawalData);
     
     // Build withdrawal message per XValley Backoffice API spec (page 18-19)
     // TS: 2 = Withdrawal (vs 1 = Deposit)
@@ -1789,13 +1790,13 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
       }]
     };
     
-    console.log("[Withdrawal] Sending to XValley deposit topic:", JSON.stringify(msg, null, 2));
+    // console.log("[Withdrawal] Sending to XValley deposit topic:", JSON.stringify(msg, null, 2));
     
     // Call XValley WebSocket deposit topic
     const result = await wsSession.call('com.fxplayer.deposit', [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
-    console.log("[Withdrawal] Response from XValley:", JSON.stringify(data, null, 2));
+    // console.log("[Withdrawal] Response from XValley:", JSON.stringify(data, null, 2));
     
     // Check response status
     if (data.MessageType === 200) {
@@ -1840,7 +1841,7 @@ export const fetchAllTransactions = async (from = '', to = '') => {
     // Filter to only this IB's clients (PartnerId) since API doesn't support direct PartnerId filter
     const ibTransactions = allTransactions.filter(t => t.partnerId === sessionPartnerId);
     
-    console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
+    // console.log(`[fetchAllTransactions] Filtered ${allTransactions.length} company transactions to ${ibTransactions.length} for PartnerId ${sessionPartnerId}`);
     
     return ibTransactions;
   } catch (error) {
@@ -1866,7 +1867,7 @@ export const saveCampaign = async (campaign) => {
   try {
     let partnerId = getSessionPartnerId();
     if (!partnerId) {
-      console.log('[Campaigns] Partner ID not available yet, waiting...');
+      // console.log('[Campaigns] Partner ID not available yet, waiting...');
       partnerId = await ensurePartnerIdAvailable();
     }
     if (!partnerId) {
@@ -1897,7 +1898,7 @@ export const saveCampaign = async (campaign) => {
       return null;
     }
 
-    console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
+    // console.log(`[Campaigns] Saved campaign: ${campaignObj.name} for partner ${partnerId}`);
     return campaignObj.id;
   } catch (error) {
     console.error('[Campaigns] Exception saving campaign:', error);
@@ -1915,18 +1916,18 @@ export const getCampaigns = async () => {
     
     // If partner ID not yet available, wait for it (WebSocket may still be connecting)
     if (!partnerId) {
-      console.log('[Campaigns] Partner ID not available yet, waiting for WebSocket...');
+      // console.log('[Campaigns] Partner ID not available yet, waiting for WebSocket...');
       partnerId = await ensurePartnerIdAvailable();
     }
     
-    console.log('[Campaigns] Query started. Partner ID:', partnerId);
+    // console.log('[Campaigns] Query started. Partner ID:', partnerId);
     
     if (!partnerId) {
       console.warn('[Campaigns] No partner ID even after waiting, using localStorage fallback');
       return getCampaignsLocal();
     }
 
-    console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
+    // console.log('[Campaigns] Querying Supabase for partner_id:', partnerId);
     
     const { data, error } = await supabase
       .from('campaigns')
@@ -1934,11 +1935,11 @@ export const getCampaigns = async () => {
       .eq('partner_id', String(partnerId))
       .order('created_date', { ascending: false });
 
-    console.log('[Campaigns] Supabase response:', { data, error });
+    // console.log('[Campaigns] Supabase response:', { data, error });
     
     if (error) {
       console.error('[Campaigns] Error fetching campaigns:', error);
-      console.log('[Campaigns] Falling back to localStorage');
+      // console.log('[Campaigns] Falling back to localStorage');
       return getCampaignsLocal();
     }
 
@@ -1950,9 +1951,9 @@ export const getCampaigns = async () => {
       updatedDate: c.updated_date
     }));
 
-    console.log(`[Campaigns] Successfully fetched ${campaigns.length} campaigns for partner ${partnerId}`);
+    // console.log(`[Campaigns] Successfully fetched ${campaigns.length} campaigns for partner ${partnerId}`);
     if (campaigns.length > 0) {
-      console.log('[Campaigns] First campaign:', campaigns[0]);
+      // console.log('[Campaigns] First campaign:', campaigns[0]);
     }
     return campaigns;
   } catch (error) {
@@ -2018,7 +2019,7 @@ export const deleteCampaign = async (id) => {
       return false;
     }
 
-    console.log(`[Campaigns] Deleted campaign: ${id} for partner ${partnerId}`);
+    // console.log(`[Campaigns] Deleted campaign: ${id} for partner ${partnerId}`);
     return true;
   } catch (error) {
     console.error('[Campaigns] Exception deleting campaign:', error);
@@ -2119,7 +2120,7 @@ export const saveAsset = async (asset) => {
   try {
     let partnerId = getSessionPartnerId();
     if (!partnerId) {
-      console.log('[Assets] Partner ID not available yet, waiting...');
+      // console.log('[Assets] Partner ID not available yet, waiting...');
       partnerId = await ensurePartnerIdAvailable();
     }
     if (!partnerId) {
@@ -2132,7 +2133,7 @@ export const saveAsset = async (asset) => {
 
     // If we have base64 file data, upload to Storage
     if (asset.fileData && asset.fileData.startsWith('data:')) {
-      console.log(`[Assets] Uploading file to Storage: ${asset.fileName}`);
+      // console.log(`[Assets] Uploading file to Storage: ${asset.fileName}`);
       
       try {
         // Convert base64 to blob
@@ -2145,7 +2146,7 @@ export const saveAsset = async (asset) => {
         
         if (fileUrl) {
           fileDataOrUrl = fileUrl;  // Store URL in database
-          console.log(`[Assets] File uploaded to Storage: ${fileUrl}`);
+          // console.log(`[Assets] File uploaded to Storage: ${fileUrl}`);
         } else {
           throw new Error('Failed to upload file to Storage');
         }
@@ -2184,7 +2185,7 @@ export const saveAsset = async (asset) => {
       throw error;
     }
 
-    console.log(`[Assets] Saved to Supabase: ${assetObj.name} for partner ${partnerId}`);
+    // console.log(`[Assets] Saved to Supabase: ${assetObj.name} for partner ${partnerId}`);
     return assetId;
   } catch (error) {
     console.error('[Assets] Exception saving asset:', error);
@@ -2240,16 +2241,16 @@ export const getAssets = async () => {
       updatedDate: a.updated_date
     }));
 
-    console.log(`[Assets] Loaded ${assets.length} assets from Supabase`);
-    if (assets.length > 0) {
-      const first = assets[0];
-      console.log('[Assets] First asset:', {
-        name: first.name,
-        type: first.type,
-        hasFileData: !!(first.fileData || first.file_data),
-        fileDataLength: (first.fileData || first.file_data) ? String(first.fileData || first.file_data).length : 0
-      });
-    }
+    // console.log(`[Assets] Loaded ${assets.length} assets from Supabase`);
+    // if (assets.length > 0) {
+    //   const first = assets[0];
+    //   console.log('[Assets] First asset:', {
+    //     name: first.name,
+    //     type: first.type,
+    //     hasFileData: !!(first.fileData || first.file_data),
+    //     fileDataLength: (first.fileData || first.file_data) ? String(first.fileData || first.file_data).length : 0
+    //   });
+    // }
     return assets;
   } catch (error) {
     console.error('[Assets] Exception fetching assets:', error);
@@ -2320,7 +2321,7 @@ export const deleteAsset = async (id) => {
       // Extract file path from URL
       try {
         const storagePath = `partner_${partnerId}/${id}`;
-        console.log(`[Assets] Deleting file from Storage: ${storagePath}`);
+        // console.log(`[Assets] Deleting file from Storage: ${storagePath}`);
         await deleteFileFromStorage('nommia-ib', storagePath);
       } catch (storageErr) {
         console.warn('[Assets] Could not delete file from Storage (may have been deleted already):', storageErr);
@@ -2339,7 +2340,7 @@ export const deleteAsset = async (id) => {
       return false;
     }
 
-    console.log(`[Assets] Deleted asset: ${id} for partner ${partnerId}`);
+    // console.log(`[Assets] Deleted asset: ${id} for partner ${partnerId}`);
     return true;
   } catch (error) {
     console.error('[Assets] Exception deleting asset:', error);
@@ -2368,7 +2369,7 @@ const saveCampaignLocal = (campaign) => {
       campaigns.push({ ...campaign, id, createdDate: now, updatedDate: now });
     }
     localStorage.setItem(getCampaignsStorageKey(), JSON.stringify(campaigns));
-    console.log(`[Campaigns] Saved campaign to localStorage: ${campaign.name}`);
+    // console.log(`[Campaigns] Saved campaign to localStorage: ${campaign.name}`);
     return campaign.id || campaigns[campaigns.length - 1].id;
   } catch (error) {
     console.error('[Campaigns] Error saving to localStorage:', error);
@@ -2413,7 +2414,7 @@ const saveAssetLocal = (asset) => {
     }
     
     localStorage.setItem(getAssetsStorageKey(), JSON.stringify(assets));
-    console.log(`[Assets] Saved to localStorage with fileData: ${asset.name}`);
+    // console.log(`[Assets] Saved to localStorage with fileData: ${asset.name}`);
     return asset.id;
   } catch (error) {
     console.error('[Assets] Error saving to localStorage:', error);
@@ -2501,7 +2502,7 @@ export const sendOTP = async (email, type = 'security') => {
   try {
     // Normalize email: trim whitespace and convert to lowercase
     email = email ? email.trim().toLowerCase() : '';
-    console.log(`[OTP] Sending ${type} OTP to ${email}`);
+    // console.log(`[OTP] Sending ${type} OTP to ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
       method: 'POST',
@@ -2518,7 +2519,7 @@ export const sendOTP = async (email, type = 'security') => {
     }
     
     const data = await response.json();
-    console.log(`[OTP] Successfully sent ${type} OTP to ${email}`);
+    // console.log(`[OTP] Successfully sent ${type} OTP to ${email}`);
     return {
       success: true,
       message: data.message || `${type} code sent to ${email}`
@@ -2543,7 +2544,7 @@ export const verifyOTP = async (email, code, type = 'security') => {
   try {
     // Normalize email: trim whitespace and convert to lowercase
     email = email ? email.trim().toLowerCase() : '';
-    console.log(`[OTP] Verifying ${type} OTP for ${email}`);
+    // console.log(`[OTP] Verifying ${type} OTP for ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
       method: 'POST',
@@ -2561,7 +2562,7 @@ export const verifyOTP = async (email, code, type = 'security') => {
     }
     
     const data = await response.json();
-    console.log(`[OTP] Successfully verified ${type} OTP for ${email}`);
+    // console.log(`[OTP] Successfully verified ${type} OTP for ${email}`);
     return {
       success: true,
       message: data.message || `${type} verified successfully`
@@ -2587,7 +2588,7 @@ export const savePayoutDetails = async (paymentDetails) => {
     const partnerId = getSessionPartnerId() || paymentDetails.partnerId;
     const userEmail = localStorage.getItem('email') || paymentDetails.email;
     
-    console.log(`[Payouts] Saving payout details for partnerId: ${partnerId}`);
+    // console.log(`[Payouts] Saving payout details for partnerId: ${partnerId}`);
     
     // Call Nommia backend instead of XValley
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/save`, {
@@ -2609,7 +2610,7 @@ export const savePayoutDetails = async (paymentDetails) => {
     }
     
     const data = await response.json();
-    console.log(`[Payouts] Successfully saved payout details`);
+    // console.log(`[Payouts] Successfully saved payout details`);
     return data;
   } catch (error) {
     console.error('[Payouts] Error saving:', error);
@@ -2627,7 +2628,7 @@ export const getPayoutDetails = async (partnerId = null) => {
     const id = partnerId || getSessionPartnerId();
     if (!id) throw new Error('No partner ID available');
     
-    console.log(`[Payouts] Fetching payout details for partnerId: ${id}`);
+    // console.log(`[Payouts] Fetching payout details for partnerId: ${id}`);
     
     // Call Nommia backend instead of XValley
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/${id}`, {
@@ -2638,14 +2639,14 @@ export const getPayoutDetails = async (partnerId = null) => {
     
     if (!response.ok) {
       if (response.status === 404) {
-        console.log(`[Payouts] No payout details found for partnerId: ${id}`);
+        // console.log(`[Payouts] No payout details found for partnerId: ${id}`);
         return null;
       }
       throw new Error('Failed to fetch payout details');
     }
     
     const data = await response.json();
-    console.log(`[Payouts] Successfully fetched payout details`);
+    // console.log(`[Payouts] Successfully fetched payout details`);
     return data.data || null;
   } catch (error) {
     console.error('[Payouts] Error fetching:', error);
@@ -2663,7 +2664,7 @@ export const deletePayoutDetails = async (partnerId = null) => {
     const id = partnerId || getSessionPartnerId();
     if (!id) throw new Error('No partner ID available');
     
-    console.log(`[Payouts] Deleting payout details for partnerId: ${id}`);
+    // console.log(`[Payouts] Deleting payout details for partnerId: ${id}`);
     
     // Call Nommia backend instead of XValley
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/payout/${id}`, {
@@ -2676,7 +2677,7 @@ export const deletePayoutDetails = async (partnerId = null) => {
     if (!response.ok) throw new Error('Failed to delete payout details');
     
     const data = await response.json();
-    console.log(`[Payouts] Successfully deleted payout details`);
+    // console.log(`[Payouts] Successfully deleted payout details`);
     return data;
   } catch (error) {
     console.error('[Payouts] Error deleting:', error);

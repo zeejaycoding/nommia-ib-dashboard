@@ -1697,12 +1697,12 @@ const MarketingView = ({ userRole, clients, apiStatus }) => {
   const handleDownloadAsset = async (asset) => {
     try {
       const isStorageUrl = asset.fileData && (asset.fileData.includes('supabase.co') || asset.fileData.includes('storage.googleapis.com'));
-      console.log('[MarketingView] Starting download for asset:', {
-        name: asset.name,
-        hasFileData: !!asset.fileData,
-        isStorageUrl,
-        fileDataPrefix: asset.fileData ? asset.fileData.substring(0, 50) : 'none'
-      });
+      // console.log('[MarketingView] Starting download for asset:', {
+      //  name: asset.name,
+       // hasFileData: !!asset.fileData,
+        //isStorageUrl,
+       // fileDataPrefix: asset.fileData ? asset.fileData.substring(0, 50) : 'none'
+      //});
       
       if (asset.fileData) {
         try {
@@ -4047,7 +4047,7 @@ export default function App() {
       // Step 2.5: Set user role based on actual session roles
       const primaryRole = getUserPrimaryRole();
       setUserRole(primaryRole);
-      console.log("[Dashboard] User role set to:", primaryRole, "Available roles:", getAccessibleRoles());
+      // console.log("[Dashboard] User role set to:", primaryRole, "Available roles:", getAccessibleRoles());
       
       // Step 3: Fetch complete client data (clients + trading accounts + trades)
     //  console.log("Fetching complete client data...");
@@ -4068,8 +4068,8 @@ export default function App() {
       setTradeHistory(stats.trades || []);
       
       // Step 5: Subscribe to real-time updates
-      subscribeToTradeUpdates((update) => console.log("Trade Update:", update));
-      subscribeToAccountEvents((update) => console.log("Account Update:", update));
+      subscribeToTradeUpdates((update) => {}); // console.log("Trade Update:", update));
+      subscribeToAccountEvents((update) => {}); // console.log("Account Update:", update));
       
       setApiStatus('connected');
       setIsLoadingClients(false);

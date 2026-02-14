@@ -7,7 +7,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_Vi8YeqE2SpKU8CXM7j0uVw_V0lJpLWE';
 // Initialize Supabase client
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-console.log('[Supabase] Client initialized with URL:', SUPABASE_URL);
+// console.log('[Supabase] Client initialized with URL:', SUPABASE_URL);
 
 /**
  * Upload file to Supabase Storage
@@ -18,7 +18,7 @@ console.log('[Supabase] Client initialized with URL:', SUPABASE_URL);
  */
 export const uploadFileToStorage = async (bucketName, filePath, fileData) => {
   try {
-    console.log(`[Storage] Uploading file to ${bucketName}/${filePath}`);
+    // console.log(`[Storage] Uploading file to ${bucketName}/${filePath}`);
     
     // Ensure bucket exists, create if needed
     const { data: buckets, error: listErr } = await supabase.storage.listBuckets();
@@ -45,7 +45,7 @@ export const uploadFileToStorage = async (bucketName, filePath, fileData) => {
       .getPublicUrl(filePath);
 
     const publicUrl = urlData?.publicUrl;
-    console.log(`[Storage] ✅ File uploaded, URL: ${publicUrl}`);
+    // console.log(`[Storage] ✅ File uploaded, URL: ${publicUrl}`);
     
     return publicUrl;
   } catch (error) {
@@ -104,7 +104,7 @@ export const setSupabasePartnerContext = async (partnerId) => {
   try {
     // Set JWT claim or custom header for RLS
     // The RLS policies will check the current user's session
-    console.log(`[Supabase] Partner context set for: ${partnerId}`);
+    // console.log(`[Supabase] Partner context set for: ${partnerId}`);
   } catch (error) {
     console.error('[Supabase] Error setting partner context:', error);
   }

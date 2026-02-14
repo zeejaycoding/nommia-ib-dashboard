@@ -5,7 +5,7 @@ export default function Diagnostics() {
 
   const addLog = (msg, type = 'info') => {
     setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
-    console.log(`[Diag] ${msg}`);
+    // console.log(`[Diag] ${msg}`);
   };
 
   const runTests = async () => {
