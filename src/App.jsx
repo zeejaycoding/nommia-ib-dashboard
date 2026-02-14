@@ -2613,7 +2613,7 @@ const PayoutsView = ({ clients, totalVolume: propTotalVolume, revenue: propReven
         // In a real scenario, you'd get this from the user's trading account list
         const withdrawalData = {
           username: getSessionUsername(),
-          accountId: sessionPartnerId || 1,  // Partner ID as account ID (should ideally be trading account ID)
+          accountId: getSessionPartnerId() || 1,  // Partner ID as account ID (should ideally be trading account ID)
           amount: parseFloat(amount),
           method: methodLabel,
           xvalleyType: selectedMethod.xvalleyType
