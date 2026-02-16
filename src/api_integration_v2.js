@@ -2459,7 +2459,7 @@ export const sendNudgeEmail = async (recipientEmail, partnerName, referrerName, 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         recipientEmail,
-        partnerName,
+        recipientName: partnerName,
         referrerName,
         nudgeType,
         tier,
