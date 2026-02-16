@@ -2685,6 +2685,179 @@ export const deletePayoutDetails = async (partnerId = null) => {
   }
 };
 
-// Legacy exports for compatibility
-export const fetchNommiaClients = fetchIBClients;
-export const fetchNetworkVolume = fetchNetworkStats;
+// ============= USER MANAGEMENT (ADMIN) =============
+
+/**
+ * Upgrade a user to Country Manager or Regional Manager
+ */
+export const upgradeUserRole = async (username, email, targetRole, country = null, regions = null, adminUsername) => {
+  try {
+    const payload = {
+      username,
+      email,
+      targetRole,
+      adminUsername
+    };
+
+    if (targetRole === 'CountryManager' && country) {
+      payload.country = country;
+    }
+
+    if (targetRole === 'RegionalManager' && regions) {
+      payload.regions = regions;
+    }
+
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/users/upgrade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to upgrade user');
+    }
+
+    const data = await response.json();
+    console.log('[Admin] ✅ User upgraded:', data);
+    return data;
+  } catch (error) {
+    console.error('[Admin] Error upgrading user:', error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch all users with their roles
+ */
+export const fetchAllUsers = async (role = 'all', country = null) => {
+  try {
+    let url = `${API_CONFIG.BACKEND_URL}/api/admin/users`;
+    const params = new URLSearchParams();
+    
+    if (role && role !== 'all') params.append('role', role);
+    if (country) params.append('country', country);
+    
+    if (params.toString()) {
+      url += `?${params.toString()}`;
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed to fetch users');
+    
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('[Admin] Error fetching users:', error);
+    return [];
+  }
+};
+
+/**
+ * Get specific user details
+ */
+export const getUserDetails = async (username) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/users/${username}`);
+    if (!response.ok) throw new Error('Failed to fetch user');
+    
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('[Admin] Error fetching user details:', error);
+    return null;
+  }
+};
+
+/**
+ * Save nudge settings
+ */
+export const saveNudgeSettings = async (adminUsername, nudgeType, cooldownHours = 24, maxNudgesPerWeek = 3, enabled = true) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminUsername,
+        nudgeType,
+        cooldownHours,
+        maxNudgesPerWeek,
+        enabled
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to save nudge settings');
+    }
+
+    const data = await response.json();
+    console.log('[Nudge Settings] ✅ Saved');
+    return data;
+  } catch (error) {
+    console.error('[Nudge Settings] Error saving:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get nudge settings for admin
+ */
+export const getNudgeSettings = async (adminUsername) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-settings/${adminUsername}`);
+    if (!response.ok) throw new Error('Failed to fetch nudge settings');
+    
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('[Nudge Settings] Error fetching:', error);
+    return [];
+  }
+};
+
+/**
+ * Check nudge cooldown
+ */
+export const checkNudgeCooldown = async (recipientEmail, nudgeType, adminUsername) => {
+  try {
+    const response = await fetch(
+      `${API_CONFIG.BACKEND_URL}/api/admin/nudge-cooldown/${encodeURIComponent(recipientEmail)}/${encodeURIComponent(nudgeType)}?adminUsername=${adminUsername}`
+    );
+    
+    if (!response.ok) throw new Error('Failed to check cooldown');
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('[Cooldown Check] Error:', error);
+    return { inCooldown: false };
+  }
+};
+
+/**
+ * Log nudge in history
+ */
+export const logNudgeHistory = async (adminUsername, recipientEmail, nudgeType) => {
+  try {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminUsername,
+        recipientEmail,
+        nudgeType
+      })
+    });
+
+    if (!response.ok) throw new Error('Failed to log nudge history');
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('[Nudge History] Error logging:', error);
+    // Don't throw - nudge was already sent
+    return { success: true };
+  }
+};
+

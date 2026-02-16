@@ -1369,7 +1369,395 @@ app.post('/api/password/reset', async (req, res) => {
   }
 });
 
+// ============= USER MANAGEMENT (ADMIN ONLY) =============
+
+/**
+ * POST /api/admin/users/upgrade
+ * Upgrade a user to Country Manager or Regional Manager
+ * Request: { username, targetRole, country (for country manager), regions (for regional manager), adminUsername }
+ */
+app.post('/api/admin/users/upgrade', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { username, email, targetRole, country, regions, adminUsername } = req.body;
+
+    // Validate required fields
+    if (!username || !targetRole || !adminUsername) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: username, targetRole, adminUsername' 
+      });
+    }
+
+    // Validate target role
+    const validRoles = ['IB', 'CountryManager', 'RegionalManager'];
+    if (!validRoles.includes(targetRole)) {
+      return res.status(400).json({ 
+        error: `Invalid role. Must be one of: ${validRoles.join(', ')}`
+      });
+    }
+
+    // Validate country/regions based on role
+    if (targetRole === 'CountryManager' && !country) {
+      return res.status(400).json({ 
+        error: 'Country required for Country Manager role'
+      });
+    }
+
+    if (targetRole === 'RegionalManager' && (!regions || !Array.isArray(regions) || regions.length === 0)) {
+      return res.status(400).json({ 
+        error: 'Regions array required and must not be empty for Regional Manager role'
+      });
+    }
+
+    console.log(`[Admin] Upgrading user ${username} to ${targetRole}`);
+
+    // Upsert user role in database
+    const { data, error } = await supabase
+      .from('user_roles')
+      .upsert({
+        username: username,
+        email: email || null,
+        base_role: targetRole,
+        country_assigned: targetRole === 'CountryManager' ? country : null,
+        regions_assigned: targetRole === 'RegionalManager' ? regions : null,
+        assigned_by: adminUsername,
+        assigned_date: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'username' })
+      .select();
+
+    if (error) {
+      console.error('[Admin] ❌ Upgrade failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to upgrade user',
+        details: error.message
+      });
+    }
+
+    console.log(`[Admin] ✅ Successfully upgraded ${username} to ${targetRole}`);
+    res.status(200).json({
+      success: true,
+      message: `User upgraded to ${targetRole}`,
+      data: data[0]
+    });
+  } catch (err) {
+    console.error('[Admin Upgrade] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users
+ * Fetch all users with their roles
+ */
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { role, country } = req.query;
+
+    let query = supabase.from('user_roles').select('*');
+
+    // Filter by role if specified
+    if (role && role !== 'all') {
+      query = query.eq('base_role', role);
+    }
+
+    // Filter by country if specified
+    if (country) {
+      query = query.eq('country_assigned', country);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('[Admin Users] ❌ Fetch failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to fetch users',
+        details: error.message
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      count: data?.length || 0,
+      data: data || []
+    });
+  } catch (err) {
+    console.error('[Admin Users] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users/:username
+ * Get specific user details
+ */
+app.get('/api/admin/users/:username', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { username } = req.params;
+
+    const { data, error } = await supabase
+      .from('user_roles')
+      .select('*')
+      .eq('username', username)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('[Admin User Detail] ❌ Fetch failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to fetch user',
+        details: error.message
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: data || null
+    });
+  } catch (err) {
+    console.error('[Admin User Detail] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/admin/nudge-settings
+ * Create or update nudge settings
+ */
+app.post('/api/admin/nudge-settings', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { adminUsername, nudgeType, cooldownHours, maxNudgesPerWeek, enabled } = req.body;
+
+    if (!adminUsername || !nudgeType) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: adminUsername, nudgeType'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('nudge_settings')
+      .upsert({
+        admin_username: adminUsername,
+        nudge_type: nudgeType,
+        cooldown_hours: cooldownHours || 24,
+        max_nudges_per_week: maxNudgesPerWeek || 3,
+        enabled: enabled !== false,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'admin_username,nudge_type' })
+      .select();
+
+    if (error) {
+      console.error('[Nudge Settings] ❌ Save failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to save nudge settings',
+        details: error.message
+      });
+    }
+
+    console.log(`[Nudge Settings] ✅ Saved for ${adminUsername}`);
+    res.status(200).json({
+      success: true,
+      message: 'Nudge settings saved',
+      data: data[0]
+    });
+  } catch (err) {
+    console.error('[Nudge Settings] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/nudge-settings/:adminUsername
+ * Get nudge settings for an admin
+ */
+app.get('/api/admin/nudge-settings/:adminUsername', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { adminUsername } = req.params;
+
+    const { data, error } = await supabase
+      .from('nudge_settings')
+      .select('*')
+      .eq('admin_username', adminUsername);
+
+    if (error) {
+      console.error('[Nudge Settings Get] ❌ Failed:', error.message);
+      return res.status(400).json({ 
+        error: 'Failed to fetch nudge settings',
+        details: error.message
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: data || []
+    });
+  } catch (err) {
+    console.error('[Nudge Settings Get] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/nudge-cooldown/:recipientEmail/:nudgeType
+ * Check if user is in cooldown for specific nudge type
+ */
+app.get('/api/admin/nudge-cooldown/:recipientEmail/:nudgeType', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { recipientEmail, nudgeType } = req.params;
+    const { adminUsername } = req.query;
+
+    // Get nudge settings for this admin
+    const { data: settings, error: settingsError } = await supabase
+      .from('nudge_settings')
+      .select('cooldown_hours')
+      .eq('admin_username', adminUsername)
+      .eq('nudge_type', nudgeType)
+      .single();
+
+    if (settingsError && settingsError.code !== 'PGRST116') {
+      console.error('[Cooldown Check] Settings fetch failed:', settingsError.message);
+    }
+
+    const cooldownHours = settings?.cooldown_hours || 24;
+
+    // Get last nudge sent to this recipient
+    const { data: lastNudge, error: nudgeError } = await supabase
+      .from('nudge_history')
+      .select('sent_at')
+      .eq('recipient_email', recipientEmail)
+      .eq('nudge_type', nudgeType)
+      .eq('admin_username', adminUsername)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (nudgeError && nudgeError.code !== 'PGRST116') {
+      console.error('[Cooldown Check] History fetch failed:', nudgeError.message);
+    }
+
+    if (!lastNudge) {
+      // No previous nudge, not in cooldown
+      return res.status(200).json({
+        inCooldown: false,
+        message: 'Not in cooldown - first nudge allowed'
+      });
+    }
+
+    const lastSentTime = new Date(lastNudge.sent_at).getTime();
+    const currentTime = Date.now();
+    const elapsedHours = (currentTime - lastSentTime) / (1000 * 60 * 60);
+
+    const inCooldown = elapsedHours < cooldownHours;
+    const remainingHours = Math.max(0, cooldownHours - elapsedHours);
+
+    res.status(200).json({
+      success: true,
+      inCooldown,
+      cooldownHours,
+      lastSentAt: lastNudge.sent_at,
+      remainingHours: inCooldown ? remainingHours.toFixed(1) : 0
+    });
+  } catch (err) {
+    console.error('[Cooldown Check] Error:', err.message);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/admin/nudge-history
+ * Log a nudge sent (called after successful nudge send)
+ */
+app.post('/api/admin/nudge-history', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+
+    const { adminUsername, recipientEmail, nudgeType } = req.body;
+
+    if (!adminUsername || !recipientEmail || !nudgeType) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: adminUsername, recipientEmail, nudgeType'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('nudge_history')
+      .insert({
+        admin_username: adminUsername,
+        recipient_email: recipientEmail,
+        nudge_type: nudgeType,
+        sent_at: new Date().toISOString()
+      })
+      .select();
+
+    if (error) {
+      console.error('[Nudge History] ❌ Log failed:', error.message);
+      // Don't fail the request - nudge was sent
+      return res.status(200).json({
+        success: true,
+        message: 'Nudge sent (history logging failed, but nudge was sent)'
+      });
+    }
+
+    console.log(`[Nudge History] ✅ Logged nudge to ${recipientEmail}`);
+    res.status(200).json({
+      success: true,
+      message: 'Nudge logged',
+      data: data[0]
+    });
+  } catch (err) {
+    console.error('[Nudge History] Error:', err.message);
+    // Don't fail - nudge was already sent
+    res.status(200).json({
+      success: true,
+      message: 'Nudge sent (history logging error, but nudge was sent)'
+    });
+  }
+});
+
 // ============= ERROR HANDLERS ============
+
 
 // 404 handler
 app.use((req, res) => {
