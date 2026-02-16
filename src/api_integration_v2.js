@@ -2454,7 +2454,7 @@ const getAssetsLocal = () => {
 // ============= NUDGE EMAIL =============
 export const sendNudgeEmail = async (recipientEmail, partnerName, referrerName, nudgeType, tier, partnerId) => {
   try {
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/nudges/send`, {
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/nudges/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2482,7 +2482,7 @@ export const sendNudgeEmail = async (recipientEmail, partnerName, referrerName, 
 
 export const getNudgeHistory = async () => {
   try {
-    const response = await fetch(`${API_CONFIG.API_BASE_URL}/api/nudges/history`);
+    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/nudges/history`);
     if (!response.ok) throw new Error('Failed to fetch nudge history');
     return await response.json();
   } catch (error) {

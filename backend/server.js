@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
+const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const speakeasy = require('speakeasy');
 require('dotenv').config();
@@ -72,100 +72,70 @@ if (supabaseUrl && supabaseKey) {
   console.warn('[Supabase] ⚠️ SUPABASE_URL or SUPABASE_KEY not set - payout storage disabled');
 }
 
-let emailTransporter = null;
+// ============= BREVO EMAIL API CONFIGURATION =============
+console.log('[Init] Loading Brevo API configuration...');
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
-// Brevo SMTP Configuration (from .env)
-console.log('[Init] Loading Brevo SMTP configuration...');
-const SMTP_CONFIG = {
-  host: process.env.SMTP_HOST ,
-  port: process.env.SMTP_PORT,
-  user: process.env.SMTP_USER,
-  password: process.env.SMTP_PASSWORD,
+const EMAIL_CONFIG = {
   from: process.env.SMTP_FROM,
   fromName: process.env.SMTP_FROM_NAME
 };
 
-const initializeEmail = () => {
-  if (emailTransporter) return emailTransporter;
-    
-  try {
-    console.log('[Email] Initializing Brevo SMTP transporter...');
-    emailTransporter = nodemailer.createTransport({
-      host: SMTP_CONFIG.host,
-      port: SMTP_CONFIG.port || 587,
-      secure: false, // Must be false for port 587 (TLS)
-      auth: {
-        user: SMTP_CONFIG.user,
-        pass: SMTP_CONFIG.password
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
-    
-    console.log(`[Email] ✅ Nodemailer configured with Brevo SMTP (${SMTP_CONFIG.host}:${SMTP_CONFIG.port || 587} - TLS)`);
-    return emailTransporter;
-  } catch (err) {
-    console.error('[Email] ❌ Failed to create transporter:', err.message);
-    return null;
-  }
-};
-
-// Initialize on startup
-console.log('[Init] Starting email transporter initialization...');
-const transporter = initializeEmail();
-
-// Test email connection (non-blocking with timeout)
-let emailVerified = false;
-if (transporter) {
-  console.log('[Email] Testing Brevo SMTP connection (with 10s timeout)...');
-  
-  // Set a timeout for verification - don't block server startup
-  const verifyTimeout = setTimeout(() => {
-    if (!emailVerified) {
-      console.warn('[Email] ⚠️ SMTP verification timeout (>10s) - will retry on first email send');
-    }
-  }, 10000);
-  
-  transporter.verify((error, success) => {
-    clearTimeout(verifyTimeout);
-    emailVerified = true;
-    
-    if (error) {
-      console.error('[Email] ❌ Brevo SMTP connection failed:', error.message);
-      console.warn('[Email] ⚠️ Email sending may fail - will attempt on first request');
-      console.warn('[Email] Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD in .env');
-    } else {
-      console.log('[Email] ✅ Brevo SMTP connection verified! Ready to send emails.');
-    }
-  });
+// Test Brevo API connection
+if (BREVO_API_KEY) {
+  console.log('[Email] ✅ Brevo API key loaded');
+  console.log('[Email] ✅ Using Brevo REST API for email sending (suitable for Render deployment)');
 } else {
-  console.error('[Email] ❌ Transporter initialization failed - email features will not work');
+  console.error('[Email] ❌ BREVO_API_KEY not set in .env');
 }
 
 // ============= EMAIL HELPER FUNCTIONS =============
 
 /**
- * Send email with automatic retry logic
+ * Send email via Brevo REST API with automatic retry logic
  * Retries up to 3 times with exponential backoff
  */
 const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
   let lastError;
   
+  // Convert nodemailer format to Brevo API format
+  const recipientEmails = Array.isArray(mailOptions.to) ? mailOptions.to : [mailOptions.to];
+  
+  const brevoPayload = {
+    sender: {
+      name: EMAIL_CONFIG.fromName,
+      email: EMAIL_CONFIG.from
+    },
+    to: recipientEmails.map(email => ({
+      email: email,
+      name: email.split('@')[0]
+    })),
+    subject: mailOptions.subject,
+    htmlContent: mailOptions.html || mailOptions.text,
+    textContent: mailOptions.text
+  };
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // console.log(`[Email] Sending (attempt ${attempt}/${maxRetries})...`);
-      const info = await transporter.sendMail(mailOptions);
-      // console.log(`[Email] ✅ Sent successfully (Message ID: ${info.messageId})`);
-      return info;
+      const response = await axios.post(BREVO_API_URL, brevoPayload, {
+        headers: {
+          'accept': 'application/json',
+          'api-key': BREVO_API_KEY,
+          'content-type': 'application/json'
+        }
+      });
+      
+      console.log(`[Email] ✅ Email sent successfully (Message ID: ${response.data.messageId})`);
+      return { messageId: response.data.messageId };
     } catch (error) {
       lastError = error;
-      console.warn(`[Email] ⚠️ Attempt ${attempt} failed: ${error.message}`);
+      const errorMsg = error.response?.data?.message || error.message;
+      console.warn(`[Email] ⚠️ Attempt ${attempt} failed: ${errorMsg}`);
       
       if (attempt < maxRetries) {
         // Exponential backoff: 1s, 2s, 4s
         const delayMs = Math.pow(2, attempt - 1) * 1000;
-        // console.log(`[Email] Retrying in ${delayMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
@@ -431,10 +401,10 @@ const emailTemplates = {
 
 app.post('/api/nudges/send', async (req, res) => {
   try {
-    if (!transporter) {
+    if (!BREVO_API_KEY) {
       return res.status(503).json({ 
         error: 'Email service not configured',
-        details: 'Check SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD in .env'
+        details: 'Check BREVO_API_KEY in .env'
       });
     }
 
@@ -484,9 +454,9 @@ app.post('/api/nudges/send', async (req, res) => {
 
     // console.log(`[Nudge] Sending ${nudgeType} to ${recipientEmail}...`);
 
-    // Send email via Brevo SMTP with retry logic
+    // Send email via Brevo API with retry logic
     const info = await sendEmailWithRetry({
-      from: `"${SMTP_CONFIG.fromName}" <${SMTP_CONFIG.from}>`,
+      from: `"${EMAIL_CONFIG.fromName}" <${EMAIL_CONFIG.from}>`,
       to: recipientEmail,
       subject: template.subject,
       html: `<pre style="font-family: Arial, sans-serif; white-space: pre-wrap; line-height: 1.6;">${emailBody}</pre>`,
@@ -518,11 +488,11 @@ app.post('/api/nudges/send', async (req, res) => {
  * GET /api/nudges/health
  */
 app.get('/api/nudges/health', (req, res) => {
-  const isHealthy = transporter !== null;
+  const isHealthy = BREVO_API_KEY !== undefined && BREVO_API_KEY !== '';
   res.status(isHealthy ? 200 : 503).json({
     status: isHealthy ? 'healthy' : 'unhealthy',
     email: isHealthy ? 'configured' : 'not configured',
-    service: 'nodemailer-brevo-smtp',
+    service: 'brevo-rest-api',
     timestamp: new Date().toISOString()
   });
 });
@@ -1188,10 +1158,10 @@ app.post('/api/otp/send', async (req, res) => {
 
     // console.log(`[OTP] ✅ Generated OTP for ${email}: ${otp} (expires in 10 min)`);
 
-    // Send OTP via email using nodemailer + Brevo SMTP
+    // Send OTP via email using Brevo API
     try {
       const mailOptions = {
-        from: `"${SMTP_CONFIG.fromName}" <${SMTP_CONFIG.from}>`,
+        from: `"${EMAIL_CONFIG.fromName}" <${EMAIL_CONFIG.from}>`,
         to: email,
         subject: 'Your Nommia Security Code',
         html: `
@@ -1219,7 +1189,7 @@ app.post('/api/otp/send', async (req, res) => {
               </div>
               <p>If you did not request this code, please ignore this email.</p>
               <div class="footer">
-                <p>${SMTP_CONFIG.fromName} | Security Team</p>
+                <p>${EMAIL_CONFIG.fromName} | Security Team</p>
               </div>
             </div>
           </body>
@@ -1227,17 +1197,17 @@ app.post('/api/otp/send', async (req, res) => {
         `
       };
 
-      // Send email via Brevo with retry logic
-      if (transporter) {
+      // Send email via Brevo API with retry logic
+      if (BREVO_API_KEY) {
         try {
           await sendEmailWithRetry(mailOptions);
-          // console.log(`[OTP] ✅ OTP sent successfully to ${email} via Brevo SMTP`);
+          // console.log(`[OTP] ✅ OTP sent successfully to ${email} via Brevo API`);
         } catch (sendErr) {
           console.warn(`[OTP] ⚠️ Failed to send OTP email after 3 retries: ${sendErr.message}`);
           // Don't fail the request if email fails - OTP was generated and stored
         }
       } else {
-        console.warn(`[OTP] ⚠️ Transporter not configured. OTP for ${email}: ${otp} (would be sent via Brevo)`);
+        console.warn(`[OTP] ⚠️ Brevo API key not configured. OTP for ${email}: ${otp} (would be sent via Brevo)`);
       }
     } catch (emailErr) {
       console.error('[OTP] ⚠️ Error preparing email:', emailErr.message);
