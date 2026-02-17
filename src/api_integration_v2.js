@@ -393,6 +393,11 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
       const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
       const data = typeof result === 'string' ? JSON.parse(result) : result;
       const wrapper = data?.Messages?.[0];
+      
+      if (skip === 0) {
+        console.log('[fetchAllCompanyUsers] DEBUG: Response structure:', { data, wrapper, firstUser: wrapper?.Messages?.[0] });
+      }
+      
       const users = wrapper?.Messages || [];
       
       if (!totalCount) {
@@ -400,9 +405,18 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
          console.log(`[fetchAllCompanyUsers] Total users in company: ${totalCount}`);
       }
       
+      console.log(`[fetchAllCompanyUsers] Batch at skip=${skip}: Got ${users.length} users, total so far: ${allUsers.length}`);
+      
       allUsers = allUsers.concat(users);
-      skip += pageSize;
-      hasMore = skip < totalCount;
+      
+      // If we got fewer users than pageSize, we've reached the end
+      if (users.length < pageSize) {
+        console.log(`[fetchAllCompanyUsers] Last batch detected (got ${users.length} < pageSize ${pageSize}). Ending pagination.`);
+        hasMore = false;
+      } else {
+        skip += pageSize;
+        hasMore = skip < totalCount;
+      }
     }
     
      console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users`);
