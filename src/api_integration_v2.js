@@ -360,6 +360,88 @@ export const logRoleChange = (fromRole, toRole, allowed) => {
  * Returns clients with their referrer information (no filtering)
  * This is used to build complete Tier 1/2/3 hierarchies
  */
+/**
+ * Fetch ALL users/leads from entire company for admin user management
+ * NO filtering by PartnerId - gets all IBs in the company
+ * @param {number} pageSize - Pagination size (default 5000)
+ * @returns {Promise<Array>} All company users
+ */
+export const fetchAllCompanyUsers = async (pageSize = 5000) => {
+  if (!wsSession) throw new Error("Not connected");
+  if (!isAdminUser()) throw new Error("Only admins can fetch company users");
+  
+  // console.log("[fetchAllCompanyUsers] Fetching ALL users for entire company (no partner filter)...");
+  
+  try {
+    let allUsers = [];
+    let skip = 0;
+    let hasMore = true;
+    let totalCount = 0;
+    
+    while (hasMore) {
+      const msg = {
+        MessageType: 100,
+        Filters: [],  // NO filters - get all users
+        PageSize: pageSize,
+        Sort: "Registration desc",
+        Skip: skip,
+        AdminType: 2  // 2 = Customers/Leads (all types)
+      };
+      
+      // console.log(`[fetchAllCompanyUsers] Fetching batch at skip=${skip}, pageSize=${pageSize}`);
+      
+      const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
+      const data = typeof result === 'string' ? JSON.parse(result) : result;
+      const wrapper = data?.Messages?.[0];
+      const users = wrapper?.Messages || [];
+      
+      if (!totalCount) {
+        totalCount = wrapper?.Total || 0;
+         console.log(`[fetchAllCompanyUsers] Total users in company: ${totalCount}`);
+      }
+      
+      allUsers = allUsers.concat(users);
+      skip += pageSize;
+      hasMore = skip < totalCount;
+    }
+    
+     console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users`);
+    
+    // Map to consistent format
+    return allUsers.map(lead => {
+      const isApproved = lead.Approved === true;
+      return {
+        id: lead.Id || lead.I,
+        username: lead.UserName || lead.A,
+        email: lead.Email || lead.E,
+        firstName: lead.FirstName,
+        lastName: lead.LastName,
+        name: `${lead.FirstName || ''} ${lead.LastName || ''}`.trim() || lead.UserName,
+        phone: lead.PhoneNumber,
+        country: lead.CountryName || 'Unknown',
+        countryCode: lead.CountryIsoCode,
+        approved: isApproved,
+        approvedDate: lead.ApprovedDate || null,
+        kycStatus: isApproved ? 'Approved' : (lead.Status === 2 ? 'Rejected' : 'Pending'),
+        status: lead.Status,
+        statusString: lead.StatusString || '',
+        lastLogin: lead.LastLogin,
+        deposit: lead.DepositsAmount || 0,
+        depositTimes: lead.DepositTimes || 0,
+        registrationDate: lead.Registration || lead.CreatedOn,
+        partnerId: lead.PartnerId,
+        companyId: lead.CompanyId,
+        companyName: lead.CompanyName,
+        referrer: lead.Referrer || lead.ReferrerId || lead.ReferrerUsername || lead.ReferralCode || null,
+        _raw: lead
+      };
+    });
+  } catch (error) {
+    console.error("[fetchAllCompanyUsers] Error:", error);
+    throw error;
+  }
+};
+
 export const fetchAllLeads = async (pageSize = 5000) => {
   if (!wsSession) throw new Error("Not connected");
   
@@ -2701,20 +2783,15 @@ export const isAdminUser = () => {
   return normRoles.includes('Admin');
 };
 
-/**
- * Fetch all users with their Nommia roles from Supabase
- * Combines XValley leads with local role assignments
- * @returns {Promise<Array>} Array of users with role assignments
- */
 export const fetchAllUsersForManagement = async () => {
   if (!wsSession) throw new Error("Not connected");
   if (!isAdminUser()) throw new Error("Only admins can fetch user management data");
   
   try {
-    // console.log("[fetchAllUsersForManagement] Fetching all leads from XValley...");
-    const allLeads = await fetchAllLeads();
+    // console.log("[fetchAllUsersForManagement] Fetching all COMPANY users from XValley...");
+    const allUsers = await fetchAllCompanyUsers();
     
-    // console.log(`[fetchAllUsersForManagement] Got ${allLeads.length} leads from XValley, fetching roles from Supabase...`);
+    // console.log(`[fetchAllUsersForManagement] Got ${allUsers.length} users from XValley, fetching roles from Supabase...`);
     
     // Fetch all user roles from Supabase
     const { data: userRoles, error: err } = await supabase
@@ -2723,9 +2800,9 @@ export const fetchAllUsersForManagement = async () => {
     
     if (err) {
       console.error('[fetchAllUsersForManagement] Supabase error:', err);
-      // Continue with leads only if Supabase fails
-      return allLeads.map(lead => ({
-        ...lead,
+      // Continue with users only if Supabase fails
+      return allUsers.map(user => ({
+        ...user,
         localRole: 'IB', // Default role
         assignedCountry: null,
         assignedRegion: null
@@ -2740,11 +2817,11 @@ export const fetchAllUsersForManagement = async () => {
       });
     }
     
-    // Merge leads with role data
-    return allLeads.map(lead => {
-      const role = roleMap[lead.id] || {};
+    // Merge users with role data
+    return allUsers.map(user => {
+      const role = roleMap[user.id] || {};
       return {
-        ...lead,
+        ...user,
         localRole: role.role || 'IB',
         assignedCountry: role.assigned_country || null,
         assignedRegion: role.assigned_region || null,
