@@ -71,11 +71,20 @@ import {
   saveNudgeSettings,
   getNudgeSettings,
   checkNudgeCooldown,
-  logNudgeHistory
+  logNudgeHistory,
+  isAdminUser,
+  fetchAllUsersForManagement,
+  updateUserRole,
+  fetchNudgeRules,
+  saveNudgeRules,
+  getUsersByCountry,
+  getUsersByRegionalManager,
+  getIBDirectReferrals
 } from './api_integration_v2';
 
+import { supabase } from './supabaseClient';
+
 import Login from './Login';
-import UserManagement from './UserManagement';
 
 // --- Configuration ---
 // Commission rates handled by XValley API - we only add tier bonuses
@@ -3654,43 +3663,419 @@ const SettingsView = () => {
     </div>
   );
 };
-// G. ADMIN USER MANAGEMENT VIEW - Integrating new UserManagement component
+// G. ADMIN USER MANAGEMENT VIEW 
 const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationThreshold }) => {
-    const adminUsername = getSessionUsername() || 'admin';
-    
+    // Local state for user data - will be fetched from API
+    const [users, setUsers] = useState([]);
+    const [editingUser, setEditingUser] = useState(null); 
+    const [showModal, setShowModal] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+
+    // Modal form states
+    const [selectedRole, setSelectedRole] = useState('');
+    const [selectedRegion, setSelectedRegion] = useState('');
+    const [selectedSubManagers, setSelectedSubManagers] = useState([]);
+
+    // New Nudge Rule State
+    const [nudgeRules, setNudgeRules] = useState({
+        cooldownHours: 24, // How often (e.g., once every 24 hours)
+        maxNudgesPerClient: 5 // Max total nudges allowed
+    });
+
+    // OTP State for Admin Save
+    const [showOtpModal, setShowOtpModal] = useState(false);
+    const [otpStep, setOtpStep] = useState('initial'); // 'initial', 'verify'
+    const [otpInput, setOtpInput] = useState('');
+    const [pendingSaveAction, setPendingSaveAction] = useState(null); // 'user' or 'policy'
+
+    // Fetch users and nudge rules on component mount
+    useEffect(() => {
+        const loadInitialData = async () => {
+            try {
+                setIsLoading(true);
+                
+                // Fetch all users with their role assignments
+                const allUsers = await fetchAllUsersForManagement();
+                setUsers(allUsers);
+                
+                // Fetch nudge rules from Supabase
+                const rules = await fetchNudgeRules();
+                setNudgeRules({
+                    cooldownHours: rules.cooldown_hours || 24,
+                    maxNudgesPerClient: rules.max_nudges_per_client || 5
+                });
+            } catch (error) {
+                console.error('[AdminUserManagementView] Error loading data:', error);
+                alert('Failed to load user management data: ' + error.message);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        
+        loadInitialData();
+    }, []);
+
+    // Open modal logic
+    const handleEditClick = (user) => {
+        setEditingUser(user);
+        setSelectedRole(user.localRole || 'IB');
+        setSelectedRegion(user.assignedCountry || user.assignedRegion || '');
+        setSelectedSubManagers(user.regionManagers || []); 
+        setShowModal(true);
+    };
+
+    // Initiate Save with OTP
+    const initiateSave = (type) => {
+        setPendingSaveAction(type);
+        setOtpStep('initial');
+        setShowOtpModal(true);
+    };
+
+    const handleRequestOTP = async () => {
+        try {
+            const adminEmail = localStorage.getItem('email') || localStorage.getItem('username');
+            if (!adminEmail) {
+                return alert('Admin email not configured. Please update your profile.');
+            }
+            
+            // console.log('[AdminUserManagement] Requesting OTP for:', adminEmail);
+            const data = await sendOTP({email: adminEmail});
+            if (data.success) {
+                alert("OTP sent to your email.");
+                setOtpStep('verify');
+            } else {
+                alert('Error: ' + (data.message || 'Failed to send OTP'));
+            }
+        } catch (error) {
+            console.error('[AdminUserManagement] OTP request error:', error);
+            alert('Failed to send OTP: ' + error.message);
+        }
+    };
+
+    // Finalize Save after OTP
+    const handleFinalizeSave = async () => {
+        if (otpInput.length < 6) {
+            alert("Invalid OTP - must be 6 digits");
+            return;
+        }
+
+        try {
+            setIsSaving(true);
+            
+            const adminEmail = localStorage.getItem('email') || localStorage.getItem('username');
+            // Verify OTP
+            const verifyData = await verifyOTP({email: adminEmail, code: otpInput});
+            
+            if (!verifyData.success) {
+                return alert('Invalid OTP: ' + (verifyData.message || 'Verification failed'));
+            }
+
+            // OTP verified - process the action
+            if (pendingSaveAction === 'user') {
+                // Save user role to database (both XValley and Supabase)
+                const countryOrRegion = selectedRole === 'Country Manager' ? selectedRegion : selectedRegion;
+                const regionManagers = selectedRole === 'Regional Manager' ? selectedSubManagers : null;
+                
+                // Prepare userData for XValley update
+                const xvalleyUserData = {
+                  FirstName: editingUser.firstName || '',
+                  LastName: editingUser.lastName || '',
+                  Email: editingUser.email || '',
+                  Phone: editingUser.phone || '',
+                  Country: editingUser.countryCode || '',
+                  CompanyId: editingUser.companyId || null,
+                  Approved: editingUser.approved || false
+                };
+                
+                // Call updateUserRole which will update both XValley and Supabase
+                await updateUserRole(editingUser.id, selectedRole, countryOrRegion, regionManagers, xvalleyUserData);
+                
+                // Update local state
+                setUsers(prevUsers => prevUsers.map(u => {
+                    if (u.id === editingUser.id) {
+                        return { 
+                            ...u, 
+                            localRole: selectedRole, 
+                            assignedCountry: selectedRole === 'Country Manager' ? countryOrRegion : null,
+                            assignedRegion: selectedRole === 'Regional Manager' ? countryOrRegion : null,
+                            regionManagers: regionManagers || []
+                        };
+                    }
+                    return u;
+                }));
+                
+                setShowModal(false);
+                setEditingUser(null);
+                alert("✅ User role updated successfully.");
+            } else if (pendingSaveAction === 'policy') {
+                // Save nudge rules
+                await saveNudgeRules(nudgeRules.cooldownHours, nudgeRules.maxNudgesPerClient);
+                alert("✅ Nudge policies saved successfully.");
+            }
+        } catch (error) {
+            console.error('[AdminUserManagement] Save error:', error);
+            alert('Verification failed: ' + error.message);
+        } finally {
+            setIsSaving(false);
+            setShowOtpModal(false);
+            setOtpStep('initial');
+            setOtpInput('');
+            setPendingSaveAction(null);
+        }
+    };
+
+
+    const toggleSubManager = (id) => {
+        if (selectedSubManagers.includes(id)) {
+            setSelectedSubManagers(selectedSubManagers.filter(sid => sid !== id));
+        } else {
+            setSelectedSubManagers([...selectedSubManagers, id]);
+        }
+    };
+
+    // Full country list excluding US, Iran, Iraq, North Korea
+    const availableCountries = [
+        "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
+        "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", "Burkina Faso", "Burundi",
+        "Cabo Verde", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", "China", "Colombia", "Comoros", "Congo (Democratic Republic)", "Congo (Republic)", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic",
+        "Denmark", "Djibouti", "Dominica", "Dominican Republic",
+        "East Timor", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Eswatini", "Ethiopia",
+        "Fiji", "Finland", "France",
+        "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guinea-Bissau", "Guyana",
+        "Haiti", "Honduras", "Hungary",
+        "Iceland", "India", "Indonesia", "Ireland", "Israel", "Italy", "Ivory Coast",
+        "Jamaica", "Japan", "Jordan",
+        "Kazakhstan", "Kenya", "Kiribati", "Kosovo", "Kuwait", "Kyrgyzstan",
+        "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg",
+        "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar",
+        "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Macedonia", "Norway",
+        "Oman",
+        "Pakistan", "Palau", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal",
+        "Qatar",
+        "Romania", "Russia", "Rwanda",
+        "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland", "Syria",
+        "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu",
+        "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom", "Uruguay", "Uzbekistan",
+        "Vanuatu", "Vatican City", "Venezuela", "Vietnam",
+        "Yemen",
+        "Zambia", "Zimbabwe"
+    ];
+
     return (
-        <div className="space-y-6">
-            {/* IB Qualification Threshold Setting */}
-            <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h3 className="text-lg font-bold text-white flex items-center mb-2">
-                            <Shield size={20} className="mr-2 text-amber-500"/>
-                            Qualification Settings
-                        </h3>
-                        <p className="text-sm text-neutral-400">Configure global rules for the network</p>
+        <div className="space-y-6 animate-fadeIn relative">
+            
+            {/* --- OTP MODAL --- */}
+            {showOtpModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+                    <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-md shadow-2xl relative p-6">
+                        <button onClick={() => setShowOtpModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                        <h3 className="text-xl font-bold text-white mb-2 flex items-center"><Shield size={20} className="mr-2 text-amber-500"/> Admin Verification</h3>
+                        
+                        {otpStep === 'initial' ? (
+                            <div className="space-y-4">
+                                <p className="text-sm text-neutral-400">Please verify your identity to confirm these changes.</p>
+                                <button onClick={handleRequestOTP} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg">Send Verification Code</button>
+                            </div>
+                        ) : (
+                            <div className="space-y-4 animate-fadeIn">
+                                <input type="text" placeholder="000000" maxLength="6" value={otpInput} onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, ''))} className="w-full bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-white text-center tracking-[0.5em] font-mono text-xl outline-none focus:border-amber-500" autoFocus />
+                                <button onClick={handleFinalizeSave} className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-900 font-bold rounded-lg mt-2">Confirm</button>
+                            </div>
+                        )}
                     </div>
                 </div>
-                
-                <div className="mt-4 bg-neutral-950/50 p-4 rounded-lg border border-neutral-800">
-                    <label className="block text-sm font-semibold text-neutral-300 mb-2">
-                        📊 IB Qualification Threshold (# of clients to appear in Network Tree)
-                    </label>
-                    <input 
-                        type="number" 
-                        value={ibQualificationThreshold} 
-                        onChange={e => setIbQualificationThreshold(Math.max(1, Number(e.target.value)))} 
-                        className="bg-neutral-800 text-white border border-neutral-700 rounded px-4 py-2 focus:border-amber-500 outline-none font-bold w-32"
-                    />
-                    <p className="text-xs text-neutral-500 mt-2">Partners must refer this many active clients to appear in the Network Tree.</p>
+            )}
+
+            {/* --- EDIT USER MODAL --- */}
+            {showModal && editingUser && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-neutral-900 border border-neutral-700 rounded-xl w-full max-w-lg shadow-2xl relative p-6">
+                        <button onClick={() => setShowModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white"><X size={20}/></button>
+                        
+                        <h3 className="text-xl font-bold text-white mb-1">Edit User Role</h3>
+                        <p className="text-sm text-neutral-400 mb-6">Modifying permissions for <span className="text-white font-bold">{editingUser.name}</span></p>
+
+                        <div className="space-y-5">
+                            <div>
+                                <label className="text-xs text-neutral-500 uppercase font-bold">Assign Role</label>
+                                <select value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-lg p-2.5 text-white focus:border-amber-500 outline-none">
+                                    <option value="IB">Standard IB</option>
+                                    <option value="Country Manager">Country Manager</option>
+                                    <option value="Regional Manager">Regional Manager</option>
+                                    <option value="Admin">Administrator</option>
+                                </select>
+                            </div>
+
+                            {selectedRole === 'Country Manager' && (
+                                <div className="p-4 bg-neutral-950/50 border border-neutral-800 rounded-lg animate-fadeIn">
+                                    <label className="text-xs text-amber-500 uppercase font-bold flex items-center mb-2"><Globe size={12} className="mr-1"/> Assign Territory</label>
+                                    <select value={selectedRegion} onChange={(e) => setSelectedRegion(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-white focus:border-amber-500 outline-none">
+                                        <option value="">Select a Country...</option>
+                                        {availableCountries.map(c => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                </div>
+                            )}
+
+                            {selectedRole === 'Regional Manager' && (
+                                <div className="p-4 bg-neutral-950/50 border border-neutral-800 rounded-lg animate-fadeIn">
+                                    <label className="text-xs text-blue-400 uppercase font-bold flex items-center mb-3"><Users size={12} className="mr-1"/> Allocate Country Managers</label>
+                                    <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+                                        {users.filter(u => u.role === 'Country Manager').length > 0 ? (
+                                            users.filter(u => u.role === 'Country Manager').map(cm => (
+                                                <div key={cm.id} className="flex items-center justify-between p-2 bg-neutral-900 border border-neutral-700 rounded hover:border-blue-500 cursor-pointer" onClick={() => toggleSubManager(cm.id)}>
+                                                    <span className="text-sm text-white">{cm.name} <span className="text-neutral-500 text-xs">({cm.region})</span></span>
+                                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedSubManagers.includes(cm.id) ? 'bg-blue-500 border-blue-500' : 'border-neutral-600'}`}>
+                                                        {selectedSubManagers.includes(cm.id) && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <p className="text-xs text-neutral-500 italic">No Country Managers found to allocate.</p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-8 flex gap-3">
+                            <button onClick={() => setShowModal(false)} className="flex-1 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-bold">Cancel</button>
+                            <button onClick={() => initiateSave('user')} className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold">Save Changes</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- ADMIN DASHBOARD HEADER --- */}
+            <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+                    <div>
+                        <h2 className="text-xl font-bold text-white flex items-center"><UserCog size={24} className="mr-3 text-red-500"/> User & Policy Management</h2>
+                        <p className="text-sm text-neutral-400 mt-1">Configure global qualification and engagement rules.</p>
+                    </div>
+                    <button onClick={() => initiateSave('policy')} className="mt-4 md:mt-0 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white rounded-lg text-sm font-bold transition-colors">
+                        Save Policies
+                    </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Qualification Rules */}
+                    <div className="bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+                        <h4 className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Shield size={14} className="mr-2"/> Qualification Rules</h4>
+                        <div className="flex items-center justify-between">
+                            <span className="text-sm text-neutral-300">IB Threshold (Clients)</span>
+                            <div className="flex items-center">
+                                <input 
+                                    type="number" 
+                                    value={ibQualificationThreshold} 
+                                    onChange={e => setIbQualificationThreshold(Number(e.target.value))} 
+                                    className="bg-neutral-800 text-white border border-neutral-700 rounded w-16 text-center py-1 focus:border-red-500 outline-none font-bold"
+                                />
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 mt-2">Partners must refer this many active clients to appear in the Network Tree.</p>
+                    </div>
+
+                    {/* Engagement / Nudge Rules (NEW) */}
+                    <div className="bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+                        <h4 className="text-xs text-neutral-500 uppercase font-bold mb-3 flex items-center"><Bell size={14} className="mr-2"/> Engagement Policy (Nudges)</h4>
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="text-[10px] text-neutral-400 block mb-1">Cooldown (Hours)</label>
+                                <input 
+                                    type="number" 
+                                    value={nudgeRules.cooldownHours}
+                                    onChange={e => setNudgeRules({...nudgeRules, cooldownHours: Number(e.target.value)})}
+                                    className="w-full bg-neutral-800 text-white border border-neutral-700 rounded py-1 px-2 focus:border-amber-500 outline-none text-sm"
+                                />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-[10px] text-neutral-400 block mb-1">Max Per Client</label>
+                                <input 
+                                    type="number" 
+                                    value={nudgeRules.maxNudgesPerClient}
+                                    onChange={e => setNudgeRules({...nudgeRules, maxNudgesPerClient: Number(e.target.value)})}
+                                    className="w-full bg-neutral-800 text-white border border-neutral-700 rounded py-1 px-2 focus:border-amber-500 outline-none text-sm"
+                                />
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 mt-2">Limits how often managers can annoy clients with "Blind Nudges".</p>
+                    </div>
                 </div>
             </div>
 
-            {/* User Management Component */}
-            <UserManagement 
-                adminUsername={adminUsername}
-                currentUserRole="Admin"
-            />
+            {/* --- USER TABLE --- */}
+            <div className="bg-neutral-900 rounded-xl border border-neutral-800 overflow-hidden">
+                <table className="w-full text-sm text-left">
+                    <thead className="bg-neutral-950 text-neutral-400 font-semibold border-b border-neutral-800">
+                        <tr>
+                            <th className="p-4">Name</th>
+                            <th className="p-4">Email</th>
+                            <th className="p-4">Current Role</th>
+                            <th className="p-4">Assigned Territory</th>
+                            <th className="p-4 text-center">Status</th>
+                            <th className="p-4 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-800">
+                        {isLoading ? (
+                            <tr>
+                                <td colSpan="6" className="p-8 text-center text-neutral-400">
+                                    <div className="flex items-center justify-center gap-2">
+                                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-500"></div>
+                                        Loading users...
+                                    </div>
+                                </td>
+                            </tr>
+                        ) : users.length === 0 ? (
+                            <tr>
+                                <td colSpan="6" className="p-8 text-center text-neutral-500">
+                                    No users found.
+                                </td>
+                            </tr>
+                        ) : (
+                            users.map(u => (
+                                <tr key={u.id} className="hover:bg-neutral-800/30 transition-colors">
+                                    <td className="p-4 text-white font-medium">{u.name}</td>
+                                    <td className="p-4 text-neutral-400">{u.email}</td>
+                                    <td className="p-4">
+                                        <span className={`px-2 py-1 rounded text-xs border ${
+                                            u.localRole === 'Admin' ? 'bg-red-900/20 text-red-400 border-red-900/50' :
+                                            u.localRole && u.localRole.includes('Manager') ? 'bg-blue-900/20 text-blue-400 border-blue-900/50' :
+                                            'bg-neutral-800 text-neutral-300 border-neutral-700'
+                                        }`}>
+                                            {u.localRole || 'IB'}
+                                        </span>
+                                    </td>
+                                    <td className="p-4 text-neutral-300">
+                                        {u.localRole === 'Regional Manager' ? (
+                                            <span className="text-xs text-neutral-500 italic">{u.regionManagers && u.regionManagers.length > 0 ? `${u.regionManagers.length} CMs Managed` : 'Unassigned'}</span>
+                                        ) : u.localRole === 'Country Manager' ? (
+                                            <span className="text-xs">{u.assignedCountry || u.assignedRegion || '-'}</span>
+                                        ) : (
+                                            <span className="text-neutral-600">-</span>
+                                        )}
+                                    </td>
+                                    <td className="p-4 text-center">
+                                        <span className={`text-[10px] px-2 py-0.5 rounded border ${u.kycStatus === 'Approved' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-neutral-800 border-neutral-700 text-neutral-500'}`}>
+                                            {u.kycStatus || 'Pending'}
+                                        </span>
+                                    </td>
+                                    <td className="p-4 text-right">
+                                        <button 
+                                            onClick={() => handleEditClick(u)}
+                                            disabled={isSaving}
+                                            className="text-xs bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-white px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                                        >
+                                            Edit Role
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))
+                        )}
+                    </tbody>
+                </table>
+            </div>
         </div>
     );
 };
@@ -3760,8 +4145,38 @@ export default function App() {
       const clientData = await fetchCompleteClientData();
     //  console.log(`✅ Loaded ${clientData.length} clients with full data`);
       
-      setClients(clientData);
-      setClientUsernames(clientData.map(c => c.username).filter(Boolean));      
+      // Filter clients based on user role (role-based access control)
+      let filteredClients = clientData;
+      const currentRole = getUserPrimaryRole();
+      
+      // For Country Manager and Regional Manager, fetch their role assignments
+      if (currentRole === 'CountryManager' || currentRole === 'RegionalManager') {
+        try {
+          const userRoles = await supabase
+            .from('user_roles')
+            .select('assigned_country, assigned_region, region_managers')
+            .eq('user_id', getSessionPartnerId())
+            .single();
+          
+          if (userRoles.data) {
+            const roleData = userRoles.data;
+            
+            if (currentRole === 'CountryManager' && roleData.assigned_country) {
+              // Filter to show only IBs in the assigned country
+              filteredClients = getUsersByCountry(roleData.assigned_country, clientData);
+            } else if (currentRole === 'RegionalManager' && roleData.region_managers) {
+              // Filter to show only IBs under the managed country managers
+              filteredClients = getUsersByRegionalManager(getSessionPartnerId(), clientData);
+            }
+          }
+        } catch (error) {
+          console.warn('[initAPI] Could not fetch user role data for filtering:', error);
+          // Fall back to all clients if role data unavailable
+        }
+      }
+      
+      setClients(filteredClients);
+      setClientUsernames(filteredClients.map(c => c.username).filter(Boolean));      
       
       // Step 4: Fetch network stats for dashboard
     //  console.log("Fetching network statistics...");
@@ -3803,7 +4218,7 @@ export default function App() {
       case 'reports': return <ReportsView clients={clients} totalVolume={totalVolume} revenue={revenue} apiStatus={apiStatus} />;
       case 'settings': return <SettingsView />;
       // Add Admin View
-      case 'admin': return <AdminUserManagementView ibQualificationThreshold={ibQualificationThreshold} setIbQualificationThreshold={setIbQualificationThreshold} />;
+      case 'admin': return <AdminUserManagementView clients={clients} ibQualificationThreshold={ibQualificationThreshold} setIbQualificationThreshold={setIbQualificationThreshold} />;
       default: return <DashboardView clients={clients} apiStatus={apiStatus} onNavigate={setActiveTab} clientUsernames={clientUsernames} setTotalVolume={setTotalVolume} setRevenue={setRevenue} setTotalPL={setTotalPL} setTradeHistory={setTradeHistory} totalVolume={totalVolume} revenue={revenue} tradeHistory={tradeHistory} />;
     }
   };

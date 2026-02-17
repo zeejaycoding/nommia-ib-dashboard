@@ -2685,179 +2685,303 @@ export const deletePayoutDetails = async (partnerId = null) => {
   }
 };
 
-// ============= USER MANAGEMENT (ADMIN) =============
+// Legacy exports for compatibility
+export const fetchNommiaClients = fetchIBClients;
+export const fetchNetworkVolume = fetchNetworkStats;
+
+// ============= USER MANAGEMENT (ADMIN ONLY) =============
 
 /**
- * Upgrade a user to Country Manager or Regional Manager
+ * Check if current user is an Admin
+ * Checks if 'admin' is in the session roles from PING response
  */
-export const upgradeUserRole = async (username, email, targetRole, country = null, regions = null, adminUsername) => {
+export const isAdminUser = () => {
+  if (!sessionRoles || sessionRoles.length === 0) return false;
+  const normRoles = sessionRoles.map(r => normalizeRoleFormat(r)).filter(Boolean);
+  return normRoles.includes('Admin');
+};
+
+/**
+ * Fetch all users with their Nommia roles from Supabase
+ * Combines XValley leads with local role assignments
+ * @returns {Promise<Array>} Array of users with role assignments
+ */
+export const fetchAllUsersForManagement = async () => {
+  if (!wsSession) throw new Error("Not connected");
+  if (!isAdminUser()) throw new Error("Only admins can fetch user management data");
+  
   try {
-    const payload = {
-      username,
-      email,
-      targetRole,
-      adminUsername
+    // console.log("[fetchAllUsersForManagement] Fetching all leads from XValley...");
+    const allLeads = await fetchAllLeads();
+    
+    // console.log(`[fetchAllUsersForManagement] Got ${allLeads.length} leads from XValley, fetching roles from Supabase...`);
+    
+    // Fetch all user roles from Supabase
+    const { data: userRoles, error: err } = await supabase
+      .from('user_roles')
+      .select('*');
+    
+    if (err) {
+      console.error('[fetchAllUsersForManagement] Supabase error:', err);
+      // Continue with leads only if Supabase fails
+      return allLeads.map(lead => ({
+        ...lead,
+        localRole: 'IB', // Default role
+        assignedCountry: null,
+        assignedRegion: null
+      }));
+    }
+    
+    // Create a map of user roles keyed by userId
+    const roleMap = {};
+    if (userRoles && Array.isArray(userRoles)) {
+      userRoles.forEach(role => {
+        roleMap[role.user_id] = role;
+      });
+    }
+    
+    // Merge leads with role data
+    return allLeads.map(lead => {
+      const role = roleMap[lead.id] || {};
+      return {
+        ...lead,
+        localRole: role.role || 'IB',
+        assignedCountry: role.assigned_country || null,
+        assignedRegion: role.assigned_region || null,
+        regionManagers: role.region_managers || [] // For regional managers
+      };
+    });
+  } catch (error) {
+    console.error("[fetchAllUsersForManagement] Error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Update user role in BOTH XValley AND Supabase
+ * Used by admins to assign roles (IB, CountryManager, RegionalManager)
+ * @param {number} userId - XValley user ID
+ * @param {string} role - New role (IB, CountryManager, RegionalManager)
+ * @param {string|null} assignedCountry - Country code if CountryManager
+ * @param {Array|null} regionManagers - Array of manager IDs if RegionalManager
+ * @param {object} userData - User data object (for XValley update)
+ * @returns {Promise<object>} Updated role record
+ */
+export const updateUserRole = async (userId, role, assignedCountry = null, regionManagers = null, userData = null) => {
+  if (!isAdminUser()) throw new Error("Only admins can update user roles");
+  
+  try {
+    // console.log(`[updateUserRole] Updating user ${userId} to role: ${role} in both XValley and Supabase`);
+    
+    // Step 1: Update in XValley via WebSocket (if userData provided)
+    if (userData && wsSession) {
+      try {
+        // Map role name to XValley AccessRoles format
+        // Nommia roles: IB, CountryManager, RegionalManager
+        // Sent to XValley as AccessRoles (may need adjustment based on XValley's expected format)
+        const xvalleyRoleString = role === 'CountryManager' ? 'countrymanager' : 
+                                  role === 'RegionalManager' ? 'regionalmanager' : 
+                                  'ib';
+        
+        const xvalleyUpdateData = {
+          ...userData,
+          // Try to update AccessRoles in XValley
+          // This field may vary - could be 'Role', 'AccessRoles', or 'UserType'
+          AccessRoles: [xvalleyRoleString],  // Try as array
+          Role: xvalleyRoleString,            // Try as string
+          UpdatedRole: role                   // Our format
+        };
+        
+        const msg = { 
+          MessageType: 100, 
+          Messages: [xvalleyUpdateData] 
+        };
+        
+        // console.log(`[updateUserRole] Sending role update to XValley:`, JSON.stringify(msg, null, 2));
+        
+        const xvalleyResult = await wsSession.call(API_CONFIG.TOPICS.SAVE_USER, [JSON.stringify(msg)]);
+        const xvalleyData = typeof xvalleyResult === 'string' ? JSON.parse(xvalleyResult) : xvalleyResult;
+        
+        // Check for error response from XValley
+        if (xvalleyData.MessageType === -3) {
+          console.warn(`[updateUserRole] XValley returned error: ${xvalleyData.Messages?.[0] || 'Unknown error'}`);
+          // Don't throw - continue to save locally even if XValley update fails
+        } else if (xvalleyData.MessageType === 200) {
+          // console.log(`[updateUserRole] Successfully updated user ${userId} in XValley`);
+        }
+      } catch (xvalleyError) {
+        console.warn('[updateUserRole] XValley update warning (will still save locally):', xvalleyError.message);
+        // Don't throw - we'll save locally as fallback
+      }
+    }
+    
+    // Step 2: Update in Supabase (always do this for local role management)
+    const { data, error } = await supabase
+      .from('user_roles')
+      .upsert(
+        {
+          user_id: userId,
+          role: role,
+          assigned_country: role === 'CountryManager' ? assignedCountry : null,
+          assigned_region: role === 'RegionalManager' ? assignedCountry : null,
+          region_managers: role === 'RegionalManager' && Array.isArray(regionManagers) ? regionManagers : [],
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'user_id' }
+      )
+      .select();
+    
+    if (error) {
+      console.error('[updateUserRole] Supabase error:', error);
+      throw error;
+    }
+    
+    // console.log(`[updateUserRole] Successfully updated user ${userId} in Supabase`);
+    return data?.[0] || null;
+  } catch (error) {
+    console.error("[updateUserRole] Error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch nudge rules and policies from Supabase
+ * @returns {Promise<object>} Nudge rules configuration
+ */
+export const fetchNudgeRules = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('nudge_rules')
+      .select('*')
+      .single(); // Assuming single configuration record
+    
+    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
+      console.error('[fetchNudgeRules] Supabase error:', error);
+      return null;
+    }
+    
+    // Return default if not found
+    if (!data) {
+      return {
+        cooldown_hours: 24,
+        max_nudges_per_client: 5
+      };
+    }
+    
+    return {
+      cooldown_hours: data.cooldown_hours || 24,
+      max_nudges_per_client: data.max_nudges_per_client || 5
     };
-
-    if (targetRole === 'CountryManager' && country) {
-      payload.country = country;
-    }
-
-    if (targetRole === 'RegionalManager' && regions) {
-      payload.regions = regions;
-    }
-
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/users/upgrade`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to upgrade user');
-    }
-
-    const data = await response.json();
-    console.log('[Admin] ✅ User upgraded:', data);
-    return data;
   } catch (error) {
-    console.error('[Admin] Error upgrading user:', error);
+    console.error("[fetchNudgeRules] Error:", error);
+    return {
+      cooldown_hours: 24,
+      max_nudges_per_client: 5
+    };
+  }
+};
+
+/**
+ * Save nudge rules and policies to Supabase
+ * @param {number} cooldownHours - How often nudges can be sent (in hours)
+ * @param {number} maxNudgesPerClient - Maximum nudges allowed per client
+ * @returns {Promise<object>} Saved rules
+ */
+export const saveNudgeRules = async (cooldownHours, maxNudgesPerClient) => {
+  if (!isAdminUser()) throw new Error("Only admins can update nudge rules");
+  
+  try {
+    // console.log(`[saveNudgeRules] Saving rules: cooldown=${cooldownHours}h, max=${maxNudgesPerClient}`);
+    
+    // Upsert into nudge_rules (assuming id=1 as the main configuration)
+    const { data, error } = await supabase
+      .from('nudge_rules')
+      .upsert(
+        {
+          id: 1, // Single configuration record
+          cooldown_hours: cooldownHours,
+          max_nudges_per_client: maxNudgesPerClient,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'id' }
+      )
+      .select();
+    
+    if (error) {
+      console.error('[saveNudgeRules] Supabase error:', error);
+      throw error;
+    }
+    
+    // console.log(`[saveNudgeRules] Successfully saved rules`);
+    return data?.[0] || null;
+  } catch (error) {
+    console.error("[saveNudgeRules] Error:", error);
     throw error;
   }
 };
 
 /**
- * Fetch all users with their roles
+ * Get users filtered by assigned country (for Country Manager view)
+ * Returns all IBs assigned to that country
+ * @param {string} countryCode - 2-letter ISO country code
+ * @param {Array} allUsers - All users array
+ * @returns {Array} Filtered user list
  */
-export const fetchAllUsers = async (role = 'all', country = null) => {
-  try {
-    let url = `${API_CONFIG.BACKEND_URL}/api/admin/users`;
-    const params = new URLSearchParams();
-    
-    if (role && role !== 'all') params.append('role', role);
-    if (country) params.append('country', country);
-    
-    if (params.toString()) {
-      url += `?${params.toString()}`;
+export const getUsersByCountry = (countryCode, allUsers) => {
+  if (!countryCode || !Array.isArray(allUsers)) return [];
+  
+  return allUsers.filter(user => {
+    // If user is IB and their referrer is a CountryManager for this country
+    if (user.localRole === 'IB') {
+      // Check if their referrer is a CM for this country
+      const referrer = allUsers.find(u => u.id === user.referrer);
+      return referrer && referrer.localRole === 'CountryManager' && referrer.assignedCountry === countryCode;
     }
-
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch users');
-    
-    const data = await response.json();
-    return data.data || [];
-  } catch (error) {
-    console.error('[Admin] Error fetching users:', error);
-    return [];
-  }
+    return false;
+  });
 };
 
 /**
- * Get specific user details
+ * Get users filtered by regional manager
+ * Returns all IBs within countries managed by this regional manager
+ * @param {number} managerId - Regional Manager's user ID
+ * @param {Array} allUsers - All users array
+ * @returns {Array} Filtered user list
  */
-export const getUserDetails = async (username) => {
-  try {
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/users/${username}`);
-    if (!response.ok) throw new Error('Failed to fetch user');
-    
-    const data = await response.json();
-    return data.data;
-  } catch (error) {
-    console.error('[Admin] Error fetching user details:', error);
-    return null;
-  }
-};
-
-/**
- * Save nudge settings
- */
-export const saveNudgeSettings = async (adminUsername, nudgeType, cooldownHours = 24, maxNudgesPerWeek = 3, enabled = true) => {
-  try {
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-settings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        adminUsername,
-        nudgeType,
-        cooldownHours,
-        maxNudgesPerWeek,
-        enabled
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to save nudge settings');
+export const getUsersByRegionalManager = (managerId, allUsers) => {
+  if (!managerId || !Array.isArray(allUsers)) return [];
+  
+  const result = [];
+  
+  // Get all country managers under this regional manager
+  const countryManagers = allUsers.filter(user => {
+    if (user.localRole === 'CountryManager') {
+      // Check if this CM reports to the RM
+      return user.referrer === managerId || (user.regionManagers && user.regionManagers.includes(managerId));
     }
-
-    const data = await response.json();
-    console.log('[Nudge Settings] ✅ Saved');
-    return data;
-  } catch (error) {
-    console.error('[Nudge Settings] Error saving:', error);
-    throw error;
-  }
+    return false;
+  });
+  
+  // Get all IBs under those country managers
+  countryManagers.forEach(cm => {
+    const ibsUnderCM = allUsers.filter(user => user.referrer === cm.id);
+    result.push(...ibsUnderCM);
+  });
+  
+  return result;
 };
 
 /**
- * Get nudge settings for admin
+ * Get all IBs for an IB/Partner (standard view)
+ * Returns direct referrals only
+ * @param {number} ibId - IB's user ID
+ * @param {Array} allUsers - All users array
+ * @returns {Array} Direct referrals
  */
-export const getNudgeSettings = async (adminUsername) => {
-  try {
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-settings/${adminUsername}`);
-    if (!response.ok) throw new Error('Failed to fetch nudge settings');
-    
-    const data = await response.json();
-    return data.data || [];
-  } catch (error) {
-    console.error('[Nudge Settings] Error fetching:', error);
-    return [];
-  }
+export const getIBDirectReferrals = (ibId, allUsers) => {
+  if (!ibId || !Array.isArray(allUsers)) return [];
+  
+  return allUsers.filter(user => {
+    return user.referrer === ibId && user.localRole === 'IB';
+  });
 };
-
-/**
- * Check nudge cooldown
- */
-export const checkNudgeCooldown = async (recipientEmail, nudgeType, adminUsername) => {
-  try {
-    const response = await fetch(
-      `${API_CONFIG.BACKEND_URL}/api/admin/nudge-cooldown/${encodeURIComponent(recipientEmail)}/${encodeURIComponent(nudgeType)}?adminUsername=${adminUsername}`
-    );
-    
-    if (!response.ok) throw new Error('Failed to check cooldown');
-    
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('[Cooldown Check] Error:', error);
-    return { inCooldown: false };
-  }
-};
-
-/**
- * Log nudge in history
- */
-export const logNudgeHistory = async (adminUsername, recipientEmail, nudgeType) => {
-  try {
-    const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/admin/nudge-history`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        adminUsername,
-        recipientEmail,
-        nudgeType
-      })
-    });
-
-    if (!response.ok) throw new Error('Failed to log nudge history');
-    
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('[Nudge History] Error logging:', error);
-    // Don't throw - nudge was already sent
-    return { success: true };
-  }
-};
-
