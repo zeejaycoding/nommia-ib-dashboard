@@ -72,7 +72,10 @@ import {
   saveNudgeRules,
   getUsersByCountry,
   getUsersByRegionalManager,
-  getIBDirectReferrals
+  getIBDirectReferrals,
+  getAuthToken,
+  getAccessToken,
+  changePasswordForLoggedInUser
 } from './api_integration_v2';
 
 import { supabase } from './supabaseClient';
@@ -3321,23 +3324,12 @@ const SettingsView = () => {
                   return alert('Password reset failed: ' + resetData.message);
               }
 
-              // OTP verified and password validated by backend. Now call XValley API directly
-              // Using the user's own authToken from login
+              // OTP verified and password validated by backend. Now call XValley API to change password
+              // This function tries HTTP /profile/reset/ first, then falls back to WAMP if needed
               try {
-                  const xvalleyRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
-                      method: 'POST',
-                      headers: {
-                          'Content-Type': 'application/json',
-                          'Authorization': 'Bearer ' + localStorage.getItem('authToken')
-                      },
-                      body: JSON.stringify({
-                          OldPassword: oldPassword,
-                          NewPassword: newPassword,
-                          ConfirmPassword: newPassword
-                      })
-                  });
+                  const result = await changePasswordForLoggedInUser(oldPassword, newPassword);
                   
-                  if (xvalleyRes.ok) {
+                  if (result.success) {
                       alert("✅ Success: Password updated successfully. Please login again with your new password.");
                       // Reset and close
                       setShowSecurityModal(false);
@@ -3347,10 +3339,11 @@ const SettingsView = () => {
                       setNewPassword('');
                       setConfirmPassword('');
                   } else {
-                      alert('Failed to update password in XValley. Please try again.');
+                      alert('Failed to update password: ' + result.message);
                   }
               } catch (xvalleyError) {
-                  alert('Error communicating with XValley: ' + xvalleyError.message);
+                  console.error('[Password Change] Error:', xvalleyError);
+                  alert('Error updating password: ' + xvalleyError.message);
               }
           } else {
               // Save Payout Details Flow - Verify OTP first
@@ -3657,7 +3650,7 @@ const SettingsView = () => {
   );
 };
 // G. ADMIN USER MANAGEMENT VIEW 
-const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationThreshold }) => {
+const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationThreshold, activeTab }) => {
     // Local state for user data - will be fetched from API
     const [users, setUsers] = useState([]);
     const [editingUser, setEditingUser] = useState(null); 
@@ -3682,32 +3675,44 @@ const AdminUserManagementView = ({ ibQualificationThreshold, setIbQualificationT
     const [otpInput, setOtpInput] = useState('');
     const [pendingSaveAction, setPendingSaveAction] = useState(null); // 'user' or 'policy'
 
-    // Fetch users and nudge rules on component mount
+    // Fetch users on component mount only
     useEffect(() => {
-        const loadInitialData = async () => {
+        const loadUsers = async () => {
             try {
                 setIsLoading(true);
-                
                 // Fetch all users with their role assignments
                 const allUsers = await fetchAllUsersForManagement();
                 setUsers(allUsers);
-                
-                // Fetch nudge rules from Supabase
-                const rules = await fetchNudgeRules();
-                setNudgeRules({
-                    cooldownHours: rules.cooldown_hours || 24,
-                    maxNudgesPerClient: rules.max_nudges_per_client || 5
-                });
             } catch (error) {
-                console.error('[AdminUserManagementView] Error loading data:', error);
+                console.error('[AdminUserManagementView] Error loading users:', error);
                 alert('Failed to load user management data: ' + error.message);
             } finally {
                 setIsLoading(false);
             }
         };
         
-        loadInitialData();
+        loadUsers();
     }, []);
+
+    // Fetch global policies independently when admin tab opens
+    useEffect(() => {
+        if (activeTab === 'admin') {
+            const loadPolicies = async () => {
+                try {
+                    const rules = await fetchNudgeRules();
+                    setNudgeRules({
+                        cooldownHours: rules.cooldown_hours || 24,
+                        maxNudgesPerClient: rules.max_nudges_per_client || 5
+                    });
+                    // Update parent state with qualification threshold
+                    setIbQualificationThreshold(rules.ib_qualification_threshold || 5);
+                } catch (error) {
+                    console.error('[AdminUserManagementView] Error fetching policies:', error);
+                }
+            };
+            loadPolicies();
+        }
+    }, [activeTab, setIbQualificationThreshold]);
 
     // Open modal logic
     const handleEditClick = (user) => {
@@ -4211,7 +4216,7 @@ export default function App() {
       case 'reports': return <ReportsView clients={clients} totalVolume={totalVolume} revenue={revenue} apiStatus={apiStatus} />;
       case 'settings': return <SettingsView />;
       // Add Admin View
-      case 'admin': return <AdminUserManagementView clients={clients} ibQualificationThreshold={ibQualificationThreshold} setIbQualificationThreshold={setIbQualificationThreshold} />;
+      case 'admin': return <AdminUserManagementView clients={clients} ibQualificationThreshold={ibQualificationThreshold} setIbQualificationThreshold={setIbQualificationThreshold} activeTab={activeTab} />;
       default: return <DashboardView clients={clients} apiStatus={apiStatus} onNavigate={setActiveTab} clientUsernames={clientUsernames} setTotalVolume={setTotalVolume} setRevenue={setRevenue} setTotalPL={setTotalPL} setTradeHistory={setTradeHistory} totalVolume={totalVolume} revenue={revenue} tradeHistory={tradeHistory} />;
     }
   };

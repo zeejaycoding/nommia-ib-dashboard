@@ -26,7 +26,8 @@ export const API_CONFIG = {
     CONTACTS: 'com.fxplayer.contacts',
     ACCOUNT_TYPES: 'com.fxplayer.accounttypes',
     ACCOUNT_LEVELS: 'com.fxplayer.accountlevels',
-    SAVE_USER: 'com.fxplayer.saveuser'
+    SAVE_USER: 'com.fxplayer.saveuser',
+    RESET_PASSWORD: 'com.fxplayer.resetpassword'
   }
 };
 
@@ -57,7 +58,14 @@ const ensurePartnerIdAvailable = async () => {
   return sessionPartnerId;
 };
 let sessionCompanyId = null;  // Store CompanyId from session for filtering
-let authToken = null;
+let authToken = null;  // WAMP authentication token
+let accessToken = null;  // HTTP Bearer token for REST endpoints
+
+// Get current auth token for WAMP connection
+export const getAuthToken = () => authToken;
+
+// Get HTTP access token for Bearer auth
+export const getAccessToken = () => accessToken;
 
 // ============= AUTHENTICATION =============
 
@@ -86,9 +94,12 @@ export const loginAndGetToken = async (username, password) => {
     if (!response.ok) throw new Error('Login failed');
     const data = await response.json();
     
-    // XValley returns refresh_token from /token endpoint
+    // XValley returns refresh_token from /token endpoint (for WAMP)
+    // Also extract access_token for HTTP Bearer auth (REST endpoints like /profile/reset/)
     authToken = data.refresh_token || data.refreshToken || data.token || data.access_token;
+    accessToken = data.access_token || data.accessToken || authToken; // Fallback to same token if access_token not provided
     // console.log("Auth token obtained:", authToken ? "Yes" : "No");
+    // console.log("Access token obtained:", accessToken ? "Yes" : "No");
     return authToken;
   } catch (error) {
     console.error("Login Error:", error);
@@ -361,57 +372,118 @@ export const logRoleChange = (fromRole, toRole, allowed) => {
  * This is used to build complete Tier 1/2/3 hierarchies
  */
 /**
- * Fetch ALL users/leads from entire company for admin user management
- * NO filtering by PartnerId - gets all IBs in the company
+ * Fetch ALL users/leads from Nommia company (CompanyId: 5) for admin user management
+ * Uses LEADS endpoint with CompanyId filter
  * @param {number} pageSize - Pagination size (default 5000)
- * @returns {Promise<Array>} All company users
+ * @returns {Promise<Array>} All company users/leads
  */
 export const fetchAllCompanyUsers = async (pageSize = 5000) => {
   if (!wsSession) throw new Error("Not connected");
   if (!isAdminUser()) throw new Error("Only admins can fetch company users");
   
-  // console.log("[fetchAllCompanyUsers] Fetching ALL users for entire company (no partner filter)...");
+  const NOMMIA_COMPANY_ID = 5;
+  
+  console.log("[fetchAllCompanyUsers] Fetching ALL users from LEADS endpoint for Nommia (CompanyId: 5)...");
+  
+  // Log diagnostic information for backend support
+  const requestTimestamp = new Date().toISOString();
+  console.log("=== DIAGNOSTIC INFO FOR BACKEND SUPPORT ===");
+  console.log("Request Timestamp:", requestTimestamp);
+  console.log("WebSocket URL:", API_CONFIG.WS_URL);
+  console.log("Current Admin User (PartnerId):", sessionPartnerId);
+  console.log("Current Admin User (Roles):", sessionRoles);
+  console.log("Current Session ID (Username):", wsSessionId);
+  console.log("Company ID:", sessionCompanyId);
+  console.log("==========================================");
   
   try {
     let allUsers = [];
     let skip = 0;
     let hasMore = true;
     let totalCount = 0;
+    const today = new Date();
+    const fiveYearsAgo = new Date(today.getTime() - 5 * 365 * 24 * 60 * 60 * 1000);
+    
+    const dateFrom = fiveYearsAgo.toISOString().split('T')[0];
+    const dateTo = today.toISOString().split('T')[0];
+    
+    const companyIdFilter = {
+      Filter: NOMMIA_COMPANY_ID,
+      FilterComparison: 3,  
+      FilterType: "CompanyId",
+      FilterValueType: 2  
+    };
     
     while (hasMore) {
       const msg = {
         MessageType: 100,
-        Filters: [],  // NO filters - get all users
+        From: dateFrom,
+        To: dateTo,
+        Filters: [companyIdFilter],
         PageSize: pageSize,
         Sort: "Registration desc",
         Skip: skip,
-        AdminType: 2  // 2 = Customers/Leads (all types)
+        AdminType: 1  
       };
       
-      // console.log(`[fetchAllCompanyUsers] Fetching batch at skip=${skip}, pageSize=${pageSize}`);
+      console.log(`[fetchAllCompanyUsers] Fetching batch at skip=${skip}, pageSize=${pageSize}`);
+      console.log("[fetchAllCompanyUsers] Request Body:", JSON.stringify(msg, null, 2));
+      console.log("[fetchAllCompanyUsers] WAMP Topic:", API_CONFIG.TOPICS.LEADS);
       
       const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
       const data = typeof result === 'string' ? JSON.parse(result) : result;
       const wrapper = data?.Messages?.[0];
-      
-      if (skip === 0) {
-        console.log('[fetchAllCompanyUsers] DEBUG: Response structure:', { data, wrapper, firstUser: wrapper?.Messages?.[0] });
-      }
-      
       const users = wrapper?.Messages || [];
+      
+      console.log("[fetchAllCompanyUsers] Response Wrapper:", JSON.stringify(wrapper, null, 2));
       
       if (!totalCount) {
         totalCount = wrapper?.Total || 0;
-         console.log(`[fetchAllCompanyUsers] Total users in company: ${totalCount}`);
+        console.log(`[fetchAllCompanyUsers] Total leads/users for Nommia: ${totalCount}`);
       }
       
-      console.log(`[fetchAllCompanyUsers] Batch at skip=${skip}: Got ${users.length} users, total so far: ${allUsers.length}`);
+      if (skip === 0) {
+        console.log(`[fetchAllCompanyUsers] First batch: Got ${users.length} users (Total: ${totalCount})`);
+        if (totalCount > 0 && users.length === 0) {
+          console.warn("[fetchAllCompanyUsers] ⚠️ PERMISSIONS ISSUE: Backend counted ${totalCount} leads, but returned 0 in Messages array");
+          console.warn("[fetchAllCompanyUsers] This indicates the admin user (PartnerId: ${sessionPartnerId}) doesn't have visibility to these leads");
+        }
+      }
       
-      allUsers = allUsers.concat(users);
+      // Transform LEADS response to standardized user format
+      const transformedUsers = users.map(lead => ({
+        id: lead.Id,
+        username: lead.UserName || '',
+        email: lead.Email || '',
+        firstName: lead.FirstName || '',
+        lastName: lead.LastName || '',
+        name: `${lead.FirstName || ''} ${lead.LastName || ''}`.trim() || lead.UserName,
+        phone: lead.PhoneNumber || '',
+        country: lead.CountryName || 'Unknown',
+        countryCode: lead.CountryIsoCode || lead.CountryCode || '',
+        approved: lead.Approved === true,
+        approvedDate: lead.ApprovedDate || null,
+        kycStatus: lead.Approved === true ? 'Approved' : 'Pending',
+        lastLogin: lead.LastLogin || null,
+        registrationDate: lead.Registration || lead.CreatedOn || null,
+        referralCode: lead.ReferralCode || '',
+        referrer: lead.Referrer || null,
+        status: lead.Status || lead.StatusString || 'Active',
+        role: lead.Role || '',
+        language: lead.Language || '',
+        partnerId: lead.PartnerId || null,
+        companyId: lead.CompanyId || NOMMIA_COMPANY_ID,
+        companyName: lead.CompanyName || 'Nommia',
+        deposit: lead.DepositsAmount || 0,
+        depositTimes: lead.DepositTimes || 0,
+        _raw: lead
+      }));
+      
+      allUsers = allUsers.concat(transformedUsers);
       
       // If we got fewer users than pageSize, we've reached the end
       if (users.length < pageSize) {
-        console.log(`[fetchAllCompanyUsers] Last batch detected (got ${users.length} < pageSize ${pageSize}). Ending pagination.`);
+        console.log(`[fetchAllCompanyUsers] Pagination complete: ${users.length} < ${pageSize}`);
         hasMore = false;
       } else {
         skip += pageSize;
@@ -419,37 +491,9 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
       }
     }
     
-     console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users`);
+    console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users from Nommia`);
     
-    // Map to consistent format
-    return allUsers.map(lead => {
-      const isApproved = lead.Approved === true;
-      return {
-        id: lead.Id || lead.I,
-        username: lead.UserName || lead.A,
-        email: lead.Email || lead.E,
-        firstName: lead.FirstName,
-        lastName: lead.LastName,
-        name: `${lead.FirstName || ''} ${lead.LastName || ''}`.trim() || lead.UserName,
-        phone: lead.PhoneNumber,
-        country: lead.CountryName || 'Unknown',
-        countryCode: lead.CountryIsoCode,
-        approved: isApproved,
-        approvedDate: lead.ApprovedDate || null,
-        kycStatus: isApproved ? 'Approved' : (lead.Status === 2 ? 'Rejected' : 'Pending'),
-        status: lead.Status,
-        statusString: lead.StatusString || '',
-        lastLogin: lead.LastLogin,
-        deposit: lead.DepositsAmount || 0,
-        depositTimes: lead.DepositTimes || 0,
-        registrationDate: lead.Registration || lead.CreatedOn,
-        partnerId: lead.PartnerId,
-        companyId: lead.CompanyId,
-        companyName: lead.CompanyName,
-        referrer: lead.Referrer || lead.ReferrerId || lead.ReferrerUsername || lead.ReferralCode || null,
-        _raw: lead
-      };
-    });
+    return allUsers;
   } catch (error) {
     console.error("[fetchAllCompanyUsers] Error:", error);
     throw error;
@@ -469,7 +513,7 @@ export const fetchAllLeads = async (pageSize = 5000) => {
       PageSize: pageSize,
       Sort: "Registration desc",
       Skip: 0,
-      AdminType: 2  // 2 = Customers/Leads
+      AdminType: 1  // FIXED: Should be 1 for LEADS (not 2) per API docs p8
     };
     
     // console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
@@ -563,7 +607,7 @@ export const fetchIBClients = async (usernames = []) => {
     PageSize: 500,
     Sort: "Registration desc",
     Skip: 0,
-    AdminType: 2  // 2 = Customers (per docs p8)
+    AdminType: 1  // FIXED: Should be 1 for LEADS (not 2) per API docs p8
   };
   
   // console.log("Leads request:", JSON.stringify(msg, null, 2));
@@ -1850,6 +1894,84 @@ export const resetUserPassword = async (username) => {
 };
 
 /**
+ * Change password for logged-in user
+ * Tries HTTP endpoint first (com.fxplayer), falls back to WAMP call if HTTP fails
+ * @param {string} oldPassword - Current password
+ * @param {string} newPassword - New password
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+export const changePasswordForLoggedInUser = async (oldPassword, newPassword) => {
+  if (!wsSession) throw new Error("Not connected to XValley");
+  if (!getAccessToken()) throw new Error("No access token available");
+  
+  console.log("[changePassword] Starting password change...");
+  
+  // Method 1: Try HTTP endpoint first (most reliable)
+  try {
+    console.log("[changePassword] Attempting HTTP method via /profile/reset/");
+    
+    const httpRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + getAccessToken()
+      },
+      body: JSON.stringify({
+        OldPassword: oldPassword,
+        NewPassword: newPassword,
+        ConfirmPassword: true
+      })
+    });
+    
+    const responseText = await httpRes.text();
+    console.log("[changePassword] HTTP Response Status:", httpRes.status);
+    console.log("[changePassword] HTTP Response Body:", responseText);
+    
+    if (httpRes.ok) {
+      console.log("[changePassword] ✅ HTTP method succeeded");
+      return { success: true, message: "Password updated successfully" };
+    }
+    
+    console.warn("[changePassword] HTTP method failed with status:", httpRes.status);
+  } catch (httpError) {
+    console.warn("[changePassword] HTTP method error:", httpError.message);
+  }
+  
+  // Method 2: Fallback to WAMP/WebSocket method
+  try {
+    console.log("[changePassword] Attempting WAMP method via com.fxplayer.resetpassword");
+    
+    const msg = {
+      MessageType: 100,
+      Messages: [{
+        Email: wsSessionId,  // Use session username/email
+        OldPassword: oldPassword,
+        NewPassword: newPassword,
+        ConfirmPassword: newPassword === newPassword  // Always true (passwords just validated)
+      }]
+    };
+    
+    const result = await wsSession.call(API_CONFIG.TOPICS.RESET_PASSWORD, [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    console.log("[changePassword] WAMP Response:", JSON.stringify(data, null, 2));
+    
+    if (data.MessageType === 200 || data.MessageType === '200') {
+      console.log("[changePassword] ✅ WAMP method succeeded");
+      return { success: true, message: "Password updated successfully via WAMP" };
+    } else {
+      throw new Error(data.Messages?.[0] || "WAMP password change failed");
+    }
+  } catch (wampError) {
+    console.error("[changePassword] WAMP method error:", wampError);
+    return { 
+      success: false, 
+      message: `Password change failed: ${wampError.message}` 
+    };
+  }
+};
+
+/**
  * Submit withdrawal request to XValley via WebSocket Admin API
  * Sends withdrawal to com.fxplayer.deposit topic
  * Will appear in XValley admin dashboard for actionable withdrawal approval
@@ -2597,7 +2719,7 @@ export const getNudgeHistory = async () => {
 export const sendOTP = async (email, type = 'security') => {
   try {
     // Normalize email: trim whitespace and convert to lowercase
-    email = email ? email.trim().toLowerCase() : '';
+    email = email ? String(email).trim().toLowerCase() : '';
     // console.log(`[OTP] Sending ${type} OTP to ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/send`, {
@@ -2639,7 +2761,7 @@ export const sendOTP = async (email, type = 'security') => {
 export const verifyOTP = async (email, code, type = 'security') => {
   try {
     // Normalize email: trim whitespace and convert to lowercase
-    email = email ? email.trim().toLowerCase() : '';
+    email = email ? String(email).trim().toLowerCase() : '';
     // console.log(`[OTP] Verifying ${type} OTP for ${email}`);
     
     const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/otp/verify`, {
@@ -2936,65 +3058,92 @@ export const updateUserRole = async (userId, role, assignedCountry = null, regio
 };
 
 /**
- * Fetch nudge rules and policies from Supabase
+ * Fetch nudge rules for current admin session
+ * Rules are stored per admin (using partner_id or admin_id)
  * @returns {Promise<object>} Nudge rules configuration
  */
 export const fetchNudgeRules = async () => {
   try {
-    const { data, error } = await supabase
-      .from('nudge_rules')
-      .select('*')
-      .single(); // Assuming single configuration record
-    
-    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
-      console.error('[fetchNudgeRules] Supabase error:', error);
-      return null;
-    }
-    
-    // Return default if not found
-    if (!data) {
+    const adminId = getSessionPartnerId() || sessionPartnerId;
+    if (!adminId) {
+      console.warn('[fetchNudgeRules] No admin/partner ID available');
       return {
         cooldown_hours: 24,
-        max_nudges_per_client: 5
+        max_nudges_per_client: 5,
+        ib_qualification_threshold: 5
       };
     }
     
+    // Fetch nudge rules for THIS specific admin
+    const { data, error } = await supabase
+      .from('nudge_rules')
+      .select('*')
+      .eq('admin_id', adminId)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') {
+      console.error('[fetchNudgeRules] Supabase error:', error);
+      return {
+        cooldown_hours: 24,
+        max_nudges_per_client: 5,
+        ib_qualification_threshold: 5
+      };
+    }
+    
+    if (!data) {
+      console.log(`[fetchNudgeRules] No rules found for admin ${adminId}, using defaults`);
+      return {
+        cooldown_hours: 24,
+        max_nudges_per_client: 5,
+        ib_qualification_threshold: 5
+      };
+    }
+    
+    console.log(`[fetchNudgeRules] Loaded rules for admin ${adminId}:`, data);
     return {
       cooldown_hours: data.cooldown_hours || 24,
-      max_nudges_per_client: data.max_nudges_per_client || 5
+      max_nudges_per_client: data.max_nudges_per_client || 5,
+      ib_qualification_threshold: data.ib_qualification_threshold || 5
     };
   } catch (error) {
     console.error("[fetchNudgeRules] Error:", error);
     return {
       cooldown_hours: 24,
-      max_nudges_per_client: 5
+      max_nudges_per_client: 5,
+      ib_qualification_threshold: 5
     };
   }
 };
 
 /**
- * Save nudge rules and policies to Supabase
+ * Save nudge rules and qualification threshold for current admin session
+ * Rules are stored per admin (using partner_id or admin_id)
  * @param {number} cooldownHours - How often nudges can be sent (in hours)
  * @param {number} maxNudgesPerClient - Maximum nudges allowed per client
+ * @param {number} ibQualificationThreshold - Minimum clients needed for IB qualification (optional)
  * @returns {Promise<object>} Saved rules
  */
-export const saveNudgeRules = async (cooldownHours, maxNudgesPerClient) => {
+export const saveNudgeRules = async (cooldownHours, maxNudgesPerClient, ibQualificationThreshold = 5) => {
   if (!isAdminUser()) throw new Error("Only admins can update nudge rules");
   
   try {
-    // console.log(`[saveNudgeRules] Saving rules: cooldown=${cooldownHours}h, max=${maxNudgesPerClient}`);
+    const adminId = getSessionPartnerId() || sessionPartnerId;
+    if (!adminId) throw new Error("No admin/partner ID available");
     
-    // Upsert into nudge_rules (assuming id=1 as the main configuration)
+    console.log(`[saveNudgeRules] Saving rules for admin ${adminId}: cooldown=${cooldownHours}h, max=${maxNudgesPerClient}, threshold=${ibQualificationThreshold}`);
+    
+    // Upsert nudge rules for THIS specific admin
     const { data, error } = await supabase
       .from('nudge_rules')
       .upsert(
         {
-          id: 1, // Single configuration record
+          admin_id: adminId,  // Key for account-specific rules
           cooldown_hours: cooldownHours,
           max_nudges_per_client: maxNudgesPerClient,
+          ib_qualification_threshold: ibQualificationThreshold,
           updated_at: new Date().toISOString()
         },
-        { onConflict: 'id' }
+        { onConflict: 'admin_id' }  // Update if exists for this admin
       )
       .select();
     
@@ -3003,7 +3152,7 @@ export const saveNudgeRules = async (cooldownHours, maxNudgesPerClient) => {
       throw error;
     }
     
-    // console.log(`[saveNudgeRules] Successfully saved rules`);
+    console.log(`[saveNudgeRules] Successfully saved rules for admin ${adminId}`);
     return data?.[0] || null;
   } catch (error) {
     console.error("[saveNudgeRules] Error:", error);
