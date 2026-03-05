@@ -15,11 +15,19 @@ export const API_CONFIG = {
   BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
   
   // ============= DUAL WEBSOCKET ENDPOINTS =============
-  // ADMIN: For backoffice operations (users, accounts, settings)
-  WS_ADMIN_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
-  
+  // In development: Vite dev server proxies /ws-admin and /ws-trade to XValley servers.
+  // In production: Route through the backend server which proxies WebSocket upgrades,
+  //   avoiding CORS/firewall restrictions on direct browser → XValley connections.
+  WS_ADMIN_URL: import.meta.env.DEV
+    ? "ws://localhost:5173/ws-admin"
+    : (import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com")
+        .replace(/^https/, 'wss').replace(/^http(?!s)/, 'ws') + "/ws-admin",
+
   // TRADE: For trading operations (trades, deposits, transactions)
-  WS_TRADE_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-trade" : "wss://platform-trade.vanex.site/ws",
+  WS_TRADE_URL: import.meta.env.DEV
+    ? "ws://localhost:5173/ws-trade"
+    : (import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com")
+        .replace(/^https/, 'wss').replace(/^http(?!s)/, 'ws') + "/ws-trade",
   
   REALM: "fxplayer",
   BROKER_HOST: import.meta.env.VITE_BROKER_HOST || "nommia.io",

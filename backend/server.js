@@ -3,6 +3,7 @@ const cors = require('cors');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const speakeasy = require('speakeasy');
+const httpProxy = require('http-proxy');
 require('dotenv').config();
 
 // ============= EARLY STARTUP LOGGING =============
@@ -1383,6 +1384,27 @@ app.use((req, res) => {
 const port = process.env.PORT || 5000;
 const host = '0.0.0.0';
 
+// ============= WEBSOCKET PROXY =============
+// Proxy WebSocket connections through the backend to avoid CORS/firewall issues
+// on the XValley platform servers when connecting from deployed frontend.
+const wsProxy = httpProxy.createProxyServer({
+  changeOrigin: true,
+  secure: true,
+  ws: true
+});
+
+wsProxy.on('error', (err, req, socket) => {
+  console.error('[WS Proxy] Error:', err.message);
+  if (socket && socket.writable) {
+    socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+  }
+});
+
+wsProxy.on('open', (proxySocket) => {
+  console.log('[WS Proxy] Connection opened');
+  proxySocket.on('error', (err) => console.error('[WS Proxy] Socket error:', err.message));
+});
+
 // Start server with detailed logging
 const server = app.listen(port, host, () => {
   console.log('\n========================================');
@@ -1390,6 +1412,22 @@ const server = app.listen(port, host, () => {
  // console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
   //console.log('[Server] Ready to accept requests');
   console.log('========================================\n');
+});
+
+// ============= WEBSOCKET UPGRADE HANDLER =============
+// Intercept HTTP upgrade requests and proxy them to the correct XValley server
+server.on('upgrade', (req, socket, head) => {
+  const url = req.url || '';
+  if (url.startsWith('/ws-admin')) {
+    console.log('[WS Proxy] Upgrading /ws-admin → wss://platform-admin.vanex.site/ws');
+    // Rewrite path: /ws-admin → /ws
+    req.url = req.url.replace(/^\/ws-admin/, '/ws');
+    wsProxy.ws(req, socket, head, { target: 'wss://platform-admin.vanex.site' });
+  } else if (url.startsWith('/ws-trade')) {
+    console.log('[WS Proxy] Upgrading /ws-trade → wss://platform-trade.vanex.site/ws');
+    req.url = req.url.replace(/^\/ws-trade/, '/ws');
+    wsProxy.ws(req, socket, head, { target: 'wss://platform-trade.vanex.site' });
+  }
 });
 
 // Handle server errors
