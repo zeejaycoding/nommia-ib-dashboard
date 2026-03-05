@@ -13,27 +13,58 @@ import { supabase, uploadFileToStorage, deleteFileFromStorage } from './supabase
 export const API_CONFIG = {
   API_BASE_URL: import.meta.env.VITE_API_BASE_URL || "https://api.nommia.io",
   BACKEND_URL: import.meta.env.VITE_BACKEND_URL || "https://nommia-ib-backend.onrender.com",
-  // Use the local Vite proxy in development, direct URL in production
-  WS_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
+  
+  // ============= DUAL WEBSOCKET ENDPOINTS =============
+  // ADMIN: For backoffice operations (users, accounts, settings)
+  WS_ADMIN_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-admin" : "wss://platform-admin.vanex.site/ws",
+  
+  // TRADE: For trading operations (trades, deposits, transactions)
+  WS_TRADE_URL: import.meta.env.DEV ? "ws://localhost:5173/ws-trade" : "wss://platform-trade.vanex.site/ws",
+  
   REALM: "fxplayer",
   BROKER_HOST: import.meta.env.VITE_BROKER_HOST || "nommia.io",
+  
   TOPICS: {
-    PING: 'com.fxplayer.ping',
-    LEADS: 'com.fxplayer.leads',
-    TRADERS: 'com.fxplayer.traders',
-    PLATFORM_CLOSE: 'com.fxplayer.platformclose',
-    DEPOSITS: 'com.fxplayer.deposits',
-    CONTACTS: 'com.fxplayer.contacts',
-    ACCOUNT_TYPES: 'com.fxplayer.accounttypes',
-    ACCOUNT_LEVELS: 'com.fxplayer.accountlevels',
-    SAVE_USER: 'com.fxplayer.saveuser',
-    RESET_PASSWORD: 'com.fxplayer.resetpassword'
+    // ========== ADMIN TOPICS (backoffice) ==========
+    PING: 'com.fxplayer.ping',                    // Auth on both
+    LEADS: 'com.fxplayer.leads',                  // ADMIN: Get customers/leads
+    TRADERS: 'com.fxplayer.traders',              // ADMIN: Get trading accounts
+    CONTACTS: 'com.fxplayer.contacts',            // ADMIN: Get contacts
+    ACCOUNT_TYPES: 'com.fxplayer.accounttypes',   // ADMIN: Account type list
+    ACCOUNT_LEVELS: 'com.fxplayer.accountlevels', // ADMIN: Account level groups
+    SAVE_USER: 'com.fxplayer.saveuser',           // ADMIN: Create/update user
+    RESET_PASSWORD: 'com.fxplayer.resetpassword', // ADMIN: Reset password
+    
+    // ========== TRADE TOPICS (trading operations) ==========
+    PLATFORM_CLOSE: 'com.fxplayer.platformclose', // TRADE: Get closed trades
+    DEPOSITS: 'com.fxplayer.deposits',            // TRADE: Get deposits/withdrawals
+  },
+  
+  TOPIC_LOCATION: {
+    // Map topics to their WebSocket connection type
+    'com.fxplayer.ping': 'admin',                 // Both but primary admin
+    'com.fxplayer.leads': 'admin',
+    'com.fxplayer.traders': 'admin',
+    'com.fxplayer.platformclose': 'trade',
+    'com.fxplayer.deposits': 'trade',
+    'com.fxplayer.contacts': 'admin',
+    'com.fxplayer.accounttypes': 'admin',
+    'com.fxplayer.accountlevels': 'admin',
+    'com.fxplayer.saveuser': 'admin',
+    'com.fxplayer.resetpassword': 'admin'
   }
 };
 
-// Global state
-let wsSession = null;
-let wsConnection = null;
+// ============= DUAL WEBSOCKET GLOBAL STATE =============
+// ADMIN WebSocket Session
+let wsSessionAdmin = null;
+let wsConnectionAdmin = null;
+
+// TRADE WebSocket Session
+let wsSessionTrade = null;
+let wsConnectionTrade = null;
+
+// Shared session state (from PING)
 let wsSessionId = null;
 let sessionPartnerId = null;
 let sessionRoles = []; // Store user roles from PING response (e.g., ["countrymanager", "admin"])
@@ -52,7 +83,7 @@ const ensurePartnerIdAvailable = async () => {
   }
   
   if (!sessionPartnerId) {
-    console.warn('[Partner ID] Timeout waiting for partner ID - WebSocket may not be connected');
+    // console.warn('[Partner ID] Timeout waiting for partner ID - WebSocket may not be connected');
   }
   
   return sessionPartnerId;
@@ -132,20 +163,28 @@ export const fetchServerConfig = async () => {
     }
     return serverConfig;
   } catch (e) {
-    console.warn("Could not fetch server config:", e.message);
+    // console.warn("Could not fetch server config:", e.message);
     return null;
   }
 };
 
 // ============= WEBSOCKET CONNECTION =============
 
-export const connectWebSocket = (token) => {
+/**
+ * Connect to ADMIN WebSocket (backoffice: users, accounts, settings)
+ */
+const connectAdminWebSocket = (token) => {
   return new Promise((resolve, reject) => {
-    if (wsSession) { resolve(wsSession); return; }
+    if (wsSessionAdmin) {
+      // console.log('[WS-ADMIN] 🔄 Already connected, reusing session');
+      resolve(wsSessionAdmin);
+      return;
+    }
     
+    // console.log('[WS-ADMIN] ⏳ Connecting to Admin WebSocket...');
     authToken = token;
-    wsConnection = new autobahn.Connection({
-      url: API_CONFIG.WS_URL,
+    wsConnectionAdmin = new autobahn.Connection({
+      url: API_CONFIG.WS_ADMIN_URL,
       realm: API_CONFIG.REALM,
       autoreconnect: true,
       max_retries: 15,
@@ -155,83 +194,191 @@ export const connectWebSocket = (token) => {
       retry_delay_growth: 1.5
     });
 
-    wsConnection.onopen = async (session) => {
-      // console.log("WebSocket Connected to:", API_CONFIG.WS_URL);
-      wsSession = session;
+    wsConnectionAdmin.onopen = async (session) => {
+      // console.log('[WS-ADMIN] ✅ Connected to:', API_CONFIG.WS_ADMIN_URL);
+      wsSessionAdmin = session;
       
       try {
         // PING to authenticate
         const pingMsg = JSON.stringify({ token: authToken, host: API_CONFIG.BROKER_HOST });
-        // console.log("Sending PING with host:", API_CONFIG.BROKER_HOST);
+        // console.log('[WS-ADMIN] 🔐 Sending PING with broker host:', API_CONFIG.BROKER_HOST);
         
         const result = await session.call(API_CONFIG.TOPICS.PING, [pingMsg]);
         const data = typeof result === 'string' ? JSON.parse(result) : result;
         
-        // console.log("PING Response:", JSON.stringify(data, null, 2));
+        // console.log('[WS-ADMIN] 📨 PING Response received');
         
+        // Check for errors (MessageType -3 is error, -2 is warning/partial)
         if (data.MessageType === -3) {
-          console.error("Auth Error:", data.Messages);
+          console.error('[WS-ADMIN] ❌ Auth Error');
           reject(new Error(data.Messages?.[0] || 'Auth failed'));
           return;
         }
         
-        // PING Response format: [username, [roles], tradingOpen, partnerId, companyId, ...]
-        // Messages[0] = session username (e.g., "divinedollars")
-        // Messages[1] = roles array (e.g., ["countrymanager"])
-        // Messages[3] = PartnerId as string (e.g., "36")
-        // Messages[4] = CompanyId as string (e.g., "5")
+        if (data.MessageType === -2) {
+          // console.warn('[WS-ADMIN] ⚠️  Warning response (MessageType -2)');
+          // Still continue with -2, as it's a warning, not a fatal error
+        }
+        
+        // Extract session info from PING response
         wsSessionId = data.Messages?.[0] || null;
-        
-        // Store roles from PING response
         sessionRoles = Array.isArray(data.Messages?.[1]) ? data.Messages[1] : [];
-        // console.log("Session ID (username):", wsSessionId);
-        // console.log("Roles:", sessionRoles);
         
-        // PartnerId is at Messages[3] as a string
         const partnerIdStr = data.Messages?.[3];
         if (partnerIdStr) {
           sessionPartnerId = parseInt(partnerIdStr, 10);
-          // console.log("Extracted PartnerId:", sessionPartnerId);
         }
         
-        // CompanyId is at Messages[4] as a string
         const companyIdStr = data.Messages?.[4];
         if (companyIdStr) {
           sessionCompanyId = parseInt(companyIdStr, 10);
-          // console.log("Extracted CompanyId:", sessionCompanyId);
         }
         
-        if (!sessionPartnerId) {
-          console.warn("No PartnerId found in PING response - this IB may not have partner access");
-        }
+        // console.log('[WS-ADMIN] ✅ Session Info: Connected');
         
-        // console.log("✅ Authenticated. PartnerId:", sessionPartnerId, "CompanyId:", sessionCompanyId);
         resolve(session);
       } catch (err) {
-        console.error("PING Error:", err);
+        console.error('[WS-ADMIN] ❌ PING Error:', err);
         reject(err);
       }
     };
 
-    wsConnection.onclose = (reason) => {
-      // console.log("WebSocket Closed:", reason);
-      // console.log("Will attempt to reconnect...");
-      wsSession = null;
-      // Don't set wsConnection to null - let autobahn handle reconnection
+    wsConnectionAdmin.onclose = (reason) => {
+      // console.log('[WS-ADMIN] 🔌 Connection closed');
+      wsSessionAdmin = null;
     };
 
-    wsConnection.onerror = (error) => {
-      console.error("WebSocket Error:", error);
+    wsConnectionAdmin.onerror = (error) => {
+      console.error('[WS-ADMIN] ⚠️ WebSocket Error');
     };
 
-    wsConnection.open();
+    wsConnectionAdmin.open();
   });
 };
 
+/**
+ * Connect to TRADE WebSocket (trading: trades, deposits, transactions)
+ */
+const connectTradeWebSocket = (token) => {
+  return new Promise((resolve, reject) => {
+    if (wsSessionTrade) {
+      // console.log('[WS-TRADE] 🔄 Already connected, reusing session');
+      resolve(wsSessionTrade);
+      return;
+    }
+    
+    // console.log('[WS-TRADE] ⏳ Connecting to Trade WebSocket...');
+    authToken = token;
+    wsConnectionTrade = new autobahn.Connection({
+      url: API_CONFIG.WS_TRADE_URL,
+      realm: API_CONFIG.REALM,
+      autoreconnect: true,
+      max_retries: 15,
+      max_retry_delay: 30,
+      retry_delay_initial: 1,
+      retry_delay_max: 30,
+      retry_delay_growth: 1.5
+    });
+
+    wsConnectionTrade.onopen = async (session) => {
+      // console.log('[WS-TRADE] ✅ Connected to WebSocket');
+      wsSessionTrade = session;
+      
+      try {
+        // PING to authenticate
+        const pingMsg = JSON.stringify({ token: authToken, host: API_CONFIG.BROKER_HOST });
+        // console.log('[WS-TRADE] 🔐 Sending PING');
+        
+        const result = await session.call(API_CONFIG.TOPICS.PING, [pingMsg]);
+        const data = typeof result === 'string' ? JSON.parse(result) : result;
+        
+        // console.log('[WS-TRADE] 📨 PING Response received');
+        
+        // Check for errors
+        if (data.MessageType === -3) {
+          console.error('[WS-TRADE] ❌ Auth Error');
+          reject(new Error(data.Messages?.[0] || 'Auth failed'));
+          return;
+        }
+        
+        if (data.MessageType === -2) {
+          // console.warn('[WS-TRADE] ⚠️  Warning response');
+        }
+        
+        // console.log('[WS-TRADE] ✅ Trade WebSocket authenticated');
+        resolve(session);
+      } catch (err) {
+        console.error('[WS-TRADE] ❌ PING Error:', err);
+        reject(err);
+      }
+    };
+
+    wsConnectionTrade.onclose = (reason) => {
+      // console.log('[WS-TRADE] 🔌 Connection closed');
+      wsSessionTrade = null;
+    };
+
+    wsConnectionTrade.onerror = (error) => {
+      console.error('[WS-TRADE] ⚠️ WebSocket Error');
+    };
+
+    wsConnectionTrade.open();
+  });
+};
+
+/**
+ * Main connection function - establishes both WebSocket connections
+ */
+export const connectWebSocket = async (token) => {
+  try {
+    // console.log('[WS] 🚀 Starting connection');
+    
+    // Connect both Admin and Trade WebSockets in parallel
+    const [adminSession, tradeSession] = await Promise.all([
+      connectAdminWebSocket(token),
+      connectTradeWebSocket(token)
+    ]);
+    
+    // console.log('[WS] ✅ Connections established');
+    return { admin: adminSession, trade: tradeSession };
+  } catch (error) {
+    console.error('[WS] ❌ Connection failed');
+    throw error;
+  }
+};
+
 export const disconnectWebSocket = () => {
-  if (wsConnection) wsConnection.close();
-  wsSession = null;
-  wsConnection = null;
+  // console.log('[WS] 🔌 Disconnecting');
+  
+  if (wsConnectionAdmin) {
+    wsConnectionAdmin.close();
+    wsSessionAdmin = null;
+    wsConnectionAdmin = null;
+  }
+  
+  if (wsConnectionTrade) {
+    wsConnectionTrade.close();
+    wsSessionTrade = null;
+    wsConnectionTrade = null;
+  }
+  
+  // console.log('[WS] ✅ All connections closed');
+};
+
+/**
+ * Get the appropriate WebSocket session based on topic
+ * Returns the correct session (admin or trade) for the topic
+ */
+const getSessionForTopic = (topic) => {
+  const location = API_CONFIG.TOPIC_LOCATION[topic];
+  
+  if (location === 'trade') {
+    if (!wsSessionTrade) throw new Error(`Trade WebSocket not connected. Cannot call ${topic}`);
+    return wsSessionTrade;
+  } else {
+    if (!wsSessionAdmin) throw new Error(`Admin WebSocket not connected. Cannot call ${topic}`);
+    return wsSessionAdmin;
+  }
 };
 
 export const getSessionPartnerId = () => sessionPartnerId;
@@ -378,23 +525,22 @@ export const logRoleChange = (fromRole, toRole, allowed) => {
  * @returns {Promise<Array>} All company users/leads
  */
 export const fetchAllCompanyUsers = async (pageSize = 5000) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.LEADS);
   if (!isAdminUser()) throw new Error("Only admins can fetch company users");
   
   const NOMMIA_COMPANY_ID = 5;
   
-  console.log("[fetchAllCompanyUsers] Fetching ALL users from LEADS endpoint for Nommia (CompanyId: 5)...");
+  // console.log("[📋 fetchAllCompanyUsers] START - Fetching ALL users from LEADS endpoint for Nommia (CompanyId: 5)...");
   
   // Log diagnostic information for backend support
   const requestTimestamp = new Date().toISOString();
-  console.log("=== DIAGNOSTIC INFO FOR BACKEND SUPPORT ===");
-  console.log("Request Timestamp:", requestTimestamp);
-  console.log("WebSocket URL:", API_CONFIG.WS_URL);
-  console.log("Current Admin User (PartnerId):", sessionPartnerId);
-  console.log("Current Admin User (Roles):", sessionRoles);
-  console.log("Current Session ID (Username):", wsSessionId);
-  console.log("Company ID:", sessionCompanyId);
-  console.log("==========================================");
+  // console.log("=== 🔍 DIAGNOSTIC INFO ===");
+  // console.log("Timestamp:", requestTimestamp);
+  // console.log("Admin PartnerId:", sessionPartnerId);
+  // console.log("Admin Roles:", sessionRoles);
+  // console.log("Session ID:", wsSessionId);
+  // console.log("Company ID:", sessionCompanyId);
+  // console.log("==========================");
   
   try {
     let allUsers = [];
@@ -426,27 +572,25 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
         AdminType: 1  
       };
       
-      console.log(`[fetchAllCompanyUsers] Fetching batch at skip=${skip}, pageSize=${pageSize}`);
-      console.log("[fetchAllCompanyUsers] Request Body:", JSON.stringify(msg, null, 2));
-      console.log("[fetchAllCompanyUsers] WAMP Topic:", API_CONFIG.TOPICS.LEADS);
+      // console.log(`[📋 fetchAllCompanyUsers] 🔄 Batch ${skip}-${skip + pageSize} via ADMIN WebSocket...`);
       
-      const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
+      // Log API call details for XValley support
+      console.log(`[XVALLEY_API] fetchAllCompanyUsers | Topic: ${API_CONFIG.TOPICS.LEADS} | Request: AdminType=${msg.AdminType}, PageSize=${msg.PageSize}, Skip=${skip}`);
+      
+      const result = await session.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
       const data = typeof result === 'string' ? JSON.parse(result) : result;
       const wrapper = data?.Messages?.[0];
       const users = wrapper?.Messages || [];
       
-      console.log("[fetchAllCompanyUsers] Response Wrapper:", JSON.stringify(wrapper, null, 2));
-      
       if (!totalCount) {
         totalCount = wrapper?.Total || 0;
-        console.log(`[fetchAllCompanyUsers] Total leads/users for Nommia: ${totalCount}`);
+        // console.log(`[📋 fetchAllCompanyUsers] ✅ Total available: ${totalCount} users`);
       }
       
       if (skip === 0) {
-        console.log(`[fetchAllCompanyUsers] First batch: Got ${users.length} users (Total: ${totalCount})`);
+        // console.log(`[📋 fetchAllCompanyUsers] First batch: Got ${users.length} users (Total: ${totalCount})`);
         if (totalCount > 0 && users.length === 0) {
-          console.warn("[fetchAllCompanyUsers] ⚠️ PERMISSIONS ISSUE: Backend counted ${totalCount} leads, but returned 0 in Messages array");
-          console.warn("[fetchAllCompanyUsers] This indicates the admin user (PartnerId: ${sessionPartnerId}) doesn't have visibility to these leads");
+          // console.warn(`[📋 fetchAllCompanyUsers] ⚠️  Permissions issue: Total=${totalCount} but returned 0 entries (PartnerId=${sessionPartnerId} may lack visibility)`);
         }
       }
       
@@ -483,7 +627,7 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
       
       // If we got fewer users than pageSize, we've reached the end
       if (users.length < pageSize) {
-        console.log(`[fetchAllCompanyUsers] Pagination complete: ${users.length} < ${pageSize}`);
+        // console.log(`[fetchAllCompanyUsers] Pagination complete: ${users.length} < ${pageSize}`);
         hasMore = false;
       } else {
         skip += pageSize;
@@ -491,7 +635,7 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
       }
     }
     
-    console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users from Nommia`);
+    // console.log(`[fetchAllCompanyUsers] Successfully fetched ${allUsers.length} total users from Nommia`);
     
     return allUsers;
   } catch (error) {
@@ -501,39 +645,31 @@ export const fetchAllCompanyUsers = async (pageSize = 5000) => {
 };
 
 export const fetchAllLeads = async (pageSize = 5000) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.LEADS);
   
-  // console.log("[fetchAllLeads] Fetching all leads/clients from platform...");
+  // console.log("[📋 fetchAllLeads] Fetching all leads/clients from ADMIN WebSocket...");
   
   try {
-    // Request with NO filters to get all clients
     const msg = {
       MessageType: 100,
       Filters: [],  // NO company/partner filter
       PageSize: pageSize,
       Sort: "Registration desc",
       Skip: 0,
-      AdminType: 1  // FIXED: Should be 1 for LEADS (not 2) per API docs p8
+      AdminType: 1  // AdminType 1 = LEADS endpoint (per XValley docs)
     };
     
-    // console.log("[fetchAllLeads] Request:", JSON.stringify(msg, null, 2));
-    const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchAllLeads | Topic: ${API_CONFIG.TOPICS.LEADS} | Request: AdminType=${msg.AdminType}, PageSize=${msg.PageSize}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
     const wrapper = data?.Messages?.[0];
     const clients = wrapper?.Messages || [];
     
-    // console.log(`[fetchAllLeads] Found ${clients.length} total clients (Total: ${wrapper?.Total || 'N/A'})`) ;
+    // console.log(`[✅ fetchAllLeads] Found ${clients.length} clients (Total available: ${wrapper?.Total || 0})`);
     
-    // Log sample clients with referrer data
-    // if (clients.length > 0) {
-    //   console.log("[fetchAllLeads] Sample clients with referrer info:");
-    //   clients.slice(0, 5).forEach((c, idx) => {
-    //     console.log(`  ${idx + 1}. ${c.UserName || c.A} | Id=${c.Id || c.I} | PartnerId=${c.PartnerId} | Referrer=${c.Referrer || c.ReferrerId || c.ReferralCode || 'N/A'}`);
-    //   });
-    // }
-    
-    // Map to consistent format
     return clients.map(lead => {
       const isApproved = lead.Approved === true;
       const statusString = lead.StatusString || '';
@@ -572,7 +708,7 @@ export const fetchAllLeads = async (pageSize = 5000) => {
     });
     
   } catch (error) {
-    console.error("[fetchAllLeads] Error:", error);
+    console.error("[❌ fetchAllLeads] Error:", error.message);
     return [];
   }
 };
@@ -580,50 +716,64 @@ export const fetchAllLeads = async (pageSize = 5000) => {
 // ============= CORE DATA FETCHING =============
 
 /**
- * Fetch all leads/customers from leads endpoint
- * Uses AdminType 2 for customers (per docs p8-9)
- * Returns: Registration, Email, UserName, LastLogin, Approved, ApprovedDate, Status, StatusString, etc.
+ * Fetch IB clients/leads from the LEADS endpoint
+ * ⚠️ IMPORTANT: Uses AdminType 1 (LEADS), NOT AdminType 2
+ * Per XValley Backoffice API docs: AdminType 1 = Leads/Customers
  */
 export const fetchIBClients = async (usernames = []) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.LEADS);
   
-  // console.log("Fetching customers for usernames:", usernames.length > 0 ? usernames.slice(0, 5) : "all");
+  // console.log(`[👥 fetchIBClients] Fetching IB clients${usernames.length > 0 ? ` for usernames: ${usernames.slice(0, 3).join(', ')}...` : ' (all)'}`);
   
-  // Add CompanyId filter per API docs (p7-9): correct format is Filter, FilterComparison, FilterType, FilterValueType
-  // This is critical to prevent loading customers from all companies
-  const filters = [];
+  // Try WITH CompanyId filter first, then fallback to no filters if returns 0
+  let filters = [];
   if (sessionCompanyId) {
     filters.push({
-      Filter: String(sessionCompanyId),        // value to filter
-      FilterComparison: 1,                      // 1 = NumberEquals (per docs p7)
-      FilterType: "CompanyId",                  // column name
-      FilterValueType: 2                        // 2 = Number (per docs p7)
+      Filter: String(sessionCompanyId),        
+      FilterComparison: 1,                      // NumberEquals
+      FilterType: "CompanyId",                  
+      FilterValueType: 2                        // Number
     });
+    // console.log(`[👥 fetchIBClients] Applied CompanyId filter: ${sessionCompanyId}`);
   }
   
-  const msg = {
+  let msg = {
     MessageType: 100,
     Filters: filters,
     PageSize: 500,
     Sort: "Registration desc",
     Skip: 0,
-    AdminType: 1  // FIXED: Should be 1 for LEADS (not 2) per API docs p8
+    AdminType: 1  // CORRECTED: AdminType 1 for LEADS endpoint
   };
   
-  // console.log("Leads request:", JSON.stringify(msg, null, 2));
-  const result = await wsSession.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
+  // Log API call details for XValley support
+  console.log(`[XVALLEY_API] fetchIBClients | Topic: ${API_CONFIG.TOPICS.LEADS} | Request: AdminType=${msg.AdminType}, PageSize=${msg.PageSize}, Filters=${filters.length}`);
   
-  // Response structure: { Messages: [{ AdminType, Messages: [...actual clients...], Total }] }
-  const wrapper = data?.Messages?.[0];
-  const clients = wrapper?.Messages || [];
+  let result = await session.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
+  let data = typeof result === 'string' ? JSON.parse(result) : result;
   
-  if (!clients.length) {
-    // console.log("No clients found - Response:", JSON.stringify(data, null, 2));
-    return [];
+  let wrapper = data?.Messages?.[0];
+  let clients = wrapper?.Messages || [];
+  
+  // FALLBACK: If CompanyId filter returned 0 results but Total > 0, retry without filter
+  if (clients.length === 0 && wrapper?.Total > 0 && filters.length > 0) {
+    // console.warn(`[⚠️  fetchIBClients] CompanyId filter (${sessionCompanyId}) returned 0 of ${wrapper?.Total}. Retrying without filter...`);
+    
+    msg.Filters = [];
+    result = await session.call(API_CONFIG.TOPICS.LEADS, [JSON.stringify(msg)]);
+    data = typeof result === 'string' ? JSON.parse(result) : result;
+    wrapper = data?.Messages?.[0];
+    clients = wrapper?.Messages || [];
+    
+    // console.log(`[👥 fetchIBClients] Fallback request (no filter): Got ${clients.length} clients (Total: ${wrapper?.Total || 0})`);
   }
   
-  // console.log(`Found ${clients.length} clients from leads endpoint (Total: ${wrapper?.Total || 'N/A'})`) ;
+  // console.log(`[✅ fetchIBClients] Received ${clients.length} clients (Total: ${wrapper?.Total || 0})`);
+  
+  if (!clients.length) {
+    // console.warn("[⚠️  fetchIBClients] No clients found - Response:", data);
+    return [];
+  }
   
   // Filter by usernames if provided
   let filteredClients = clients;
@@ -633,29 +783,19 @@ export const fetchIBClients = async (usernames = []) => {
       const username = (c.UserName || c.A || '').toLowerCase();
       return usernameSet.has(username);
     });
-    // console.log(`Filtered to ${filteredClients.length} clients matching IB's usernames`);
+    // console.log(`[👥 fetchIBClients] Filtered to ${filteredClients.length} of ${clients.length} matching provided usernames`);
   }
   
-  // Log first client to see field names
-  if (filteredClients[0]) {
-    // console.log("Sample client data:", JSON.stringify(filteredClients[0], null, 2));
-  }
-  
-  // Map to client objects with all fields from docs (p8-9)
-  // Includes: Approved, ApprovedDate, Status, StatusString, LastLogin for KYC/activity
+  // Map to client objects 
   return filteredClients.map(lead => {
-    // Determine KYC status from Approved field (docs p9)
     const isApproved = lead.Approved === true;
     const statusString = lead.StatusString || '';
-    
-    // Pending = not approved OR status contains 'Pending'
     const isPending = !isApproved || statusString.toLowerCase().includes('pending');
     
-    // Determine KYC status
     let kycStatus = 'Pending';
     if (isApproved) {
       kycStatus = 'Approved';
-    } else if (lead.Status === 2) { // Rejected status
+    } else if (lead.Status === 2) {
       kycStatus = 'Rejected';
     }
     
@@ -700,9 +840,8 @@ export const fetchIBClients = async (usernames = []) => {
  * Aggregates financial data (deposits, volume, equity) for display
  */
 export const fetchAllClientsForNetwork = async () => {
-  if (!wsSession) throw new Error("Not connected");
-  
-  // console.log("[fetchAllClientsForNetwork] Fetching all trading accounts with aggregated data...");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.TRADERS);
+  // console.log(`[👥 fetchAllClientsForNetwork] START - Fetching all trading accounts...`);
   
   try {
     // Step 1: Fetch all trading account (REAL ONLY - AccountType: "1")
@@ -716,7 +855,12 @@ export const fetchAllClientsForNetwork = async () => {
       Skip: 0
     };
     
-    const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
+    // console.log("[👥 fetchAllClientsForNetwork] Calling TRADERS topic...");
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchAllClientsForNetwork | Topic: ${API_CONFIG.TOPICS.TRADERS} | Request: AdminType=${msg.AdminType}, AccountType=${msg.AccountType}, PageSize=${msg.PageSize}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
     const wrapper = data?.Messages?.[0];
@@ -772,8 +916,9 @@ export const fetchAllClientsForNetwork = async () => {
     });
     
     // Step 3: Get closed trades for volume and commission
-    // console.log("[fetchAllClientsForNetwork] Fetching closed trades for volume/commission...");
+    // console.log("[👥 fetchAllClientsForNetwork] Fetching closed trades...");
     
+    const tradeSession = getSessionForTopic(API_CONFIG.TOPICS.PLATFORM_CLOSE);
     const tradesMsg = {
       MessageType: 100,
       From: "",
@@ -786,7 +931,12 @@ export const fetchAllClientsForNetwork = async () => {
       Skip: 0
     };
     
-    const tradesResult = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(tradesMsg)]);
+    // console.log("[👥 fetchAllClientsForNetwork] Calling PLATFORM_CLOSE...");
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchAllClientsForNetwork-Trades | Topic: ${API_CONFIG.TOPICS.PLATFORM_CLOSE} | Request: AdminType=${tradesMsg.AdminType}, PageSize=${tradesMsg.PageSize}`);
+    
+    const tradesResult = await tradeSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(tradesMsg)]);
     const tradesData = typeof tradesResult === 'string' ? JSON.parse(tradesResult) : tradesResult;
     
     const tradesWrapper = tradesData?.Messages?.[0];
@@ -860,127 +1010,142 @@ export const fetchAllClientsForNetwork = async () => {
  * Fetch trading accounts for clients to get Equity, Balance, etc.
  */
 export const fetchTradingAccountsBulk = async (partnerId) => {
-  if (!wsSession) throw new Error("Not connected");
-  
-  const pid = partnerId || sessionPartnerId;
-  // console.log("Fetching trading accounts (will filter by partnerId client-side):", pid);
-  
-  // Note: T.PartnerId filter doesn't work server-side
-  // Fetch all account types (12 = real + demo) and filter client-side
-  // We need both to check for real accounts (TATD.Type === 1)
-  const msg = {
-    MessageType: 100,
-    Filters: [],
-    AdminType: 8,
-    Sort: "Id desc",
-    AccountType: "1",  // 1=real, 2=demo, 12=all - fetch all to filter by Type
-    PageSize: 1000,
-    Skip: 0
-  };
-  
-  // console.log("Traders request:", JSON.stringify(msg, null, 2));
-  const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  
-  // Response structure: { Messages: [{ AdminType, Messages: [...actual accounts...], Total }] }
-  const wrapper = data?.Messages?.[0];
-  const accounts = wrapper?.Messages || [];
-  
-  if (!accounts.length) {
-    // console.log("No trading accounts found - Response:", JSON.stringify(data, null, 2));
-    return [];
-  }
-  
-  console.log(`Found ${accounts.length} trading accounts (Total: ${wrapper?.Total || 'N/A'})`);
-  
-  // Filter by PartnerId client-side
-  let filteredAccounts = accounts;
-  if (pid) {
-    filteredAccounts = accounts.filter(acc => acc.T?.PartnerId === pid);
-    console.log(`Filtered to ${filteredAccounts.length} accounts for PartnerId ${pid}`);
-  }
-  
-  // Log first account to see field structure
-  if (filteredAccounts[0]) {
-    const sample = filteredAccounts[0];
-    const accountType = sample.TATD || {};
-    const isReal = accountType.Type === 1;
-    console.log("Sample trading account:", {
-      AccountId: sample.I,
-      AccountName: sample.Name,
-      Active: sample.A,  // Trading account Active flag
-      IsReal: isReal,    // TATD.Type === 1 means REAL account
-      AccountType: accountType.Type,
-      AccountTypeName: accountType.Name,
-      Username: sample.T?.A,
-      Email: sample.T?.E,
-      UserApproved: sample.T?.Approved,  // KYC from T.Approved!
-      TraderDeposited: sample.T?.Deposited,
-      TraderState: sample.T?.State,
-      Equity: sample.E,
-      Balance: sample.BAL,
-      DepositsAmount: sample.DepositsAmount,
-      DepositTimes: sample.DepositTimes,
-      PartnerId: sample.T?.PartnerId
-    });
-  }
-  
-  return filteredAccounts;
-};
-
-/**
- * Fetch all closed trades for volume calculation
- * Uses a single bulk request instead of per-account queries
- */
-export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, accountIds = []) => {
-  if (!wsSession) {
-    console.error("[fetchClosedTradesBulk] API call unsuccessful: WebSocket not connected");
-    return [];
-  }
+  const session = getSessionForTopic(API_CONFIG.TOPICS.TRADERS);
+  // console.log("[👤 fetchTradingAccountsBulk] START - Loading trading accounts...");
   
   try {
     const pid = partnerId || sessionPartnerId;
     
-    // Note: Can't filter by TA.T.PartnerId (doesn't exist)
-    // Filter by TraderAccountId if we have specific accounts, otherwise fetch all
-    const filters = [];
+    // Note: T.PartnerId filter doesn't work server-side
+    // Fetch all account types (12 = real + demo) and filter client-side
+    // We need both to check for real accounts (TATD.Type === 1)
+    const msg = {
+      MessageType: 100,
+      Filters: [],
+      AdminType: 8,
+      Sort: "Id desc",
+      AccountType: "1",  // 1=real, 2=demo, 12=all - fetch all to filter by Type
+      PageSize: 1000,
+      Skip: 0
+    };
     
-    // If we have account IDs, we could filter by them (but may need multiple calls)
-    // For now, fetch all and filter client-side by partnerId
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchTradingAccountsBulk | Topic: ${API_CONFIG.TOPICS.TRADERS} | Request: AdminType=${msg.AdminType}, AccountType=${msg.AccountType}, PageSize=${msg.PageSize}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
+    
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    // Response structure: { Messages: [{ AdminType, Messages: [...actual accounts...], Total }] }
+    const wrapper = data?.Messages?.[0];
+    const accounts = wrapper?.Messages || [];
+    
+    // console.log(`[👤 fetchTradingAccountsBulk] ✅ Response received: ${accounts.length} accounts (Total available: ${wrapper?.Total || 'N/A'})`);
+    
+    if (!accounts.length) {
+      // console.warn("[⚠️  fetchTradingAccountsBulk] No trading accounts found in response");
+      return [];
+    }
+    
+    // Filter by PartnerId client-side
+    let filteredAccounts = accounts;
+    if (pid) {
+      // Debug: Check where PartnerId is actually stored
+      if (accounts.length > 0) {
+        // const firstAcc = accounts[0];
+        // console.log(`[👤 fetchTradingAccountsBulk] DEBUG - PartnerId lookup in first account:`, {
+        //   'acc.PartnerId': firstAcc.PartnerId,
+        //   'acc.T.PartnerId': firstAcc.T?.PartnerId,
+        //   'acc.T.I (trader ID)': firstAcc.T?.I,
+        //   'targetPartnerId': pid,
+        //   allKeys: Object.keys(firstAcc).slice(0, 20)
+        // });
+      }
+      
+      // Try multiple filter approaches
+      const filterAtRoot = accounts.filter(acc => acc.PartnerId === pid);
+      const filterAtTrader = accounts.filter(acc => acc.T?.PartnerId === pid);
+      
+      filteredAccounts = filterAtTrader.length > 0 ? filterAtTrader : filterAtRoot;
+      
+      // console.log(`[👤 fetchTradingAccountsBulk] PartnerId filter results:`, {
+      //   total: accounts.length,
+      //   atRoot: filterAtRoot.length,
+      //   atTrader: filterAtTrader.length,
+      //   used: filteredAccounts.length,
+      //   targetPartnerId: pid
+      // });
+    }
+    
+    // Log first account to see field structure
+    // if (filteredAccounts[0]) {
+    //   const sample = filteredAccounts[0];
+    //   const accountType = sample.TATD || {};
+    //   const isReal = accountType.Type === 1;
+    //   console.log("[👤 fetchTradingAccountsBulk] Sample account structure:", {
+    //     AccountId: sample.I,
+    //     AccountName: sample.Name,
+    //     IsReal: isReal,
+    //     Username: sample.T?.A,
+    //     Email: sample.T?.E,
+    //     UserApproved: sample.T?.Approved,
+    //     Equity: sample.E,
+    //     Balance: sample.BAL,
+    //     DepositsAmount: sample.DepositsAmount,
+    //     PartnerId: sample.T?.PartnerId
+    //   });
+    // }
+    
+    return filteredAccounts;
+  } catch (error) {
+    console.error('[👤 fetchTradingAccountsBulk] Error:', error);
+    return [];
+  }
+};
+
+/**
+ * Fetch all closed trades for volume calculation
+ * Uses TRADE WebSocket for real-time trade data
+ */
+export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, accountIds = []) => {
+  // console.log(`[📊 fetchClosedTradesBulk] Starting fetch...`);
+  
+  try {
+    const pid = partnerId || sessionPartnerId;
+    const adminSession = getSessionForTopic(API_CONFIG.TOPICS.LEADS);
+    
+    const filters = [];
     
     const msg = {
       MessageType: 100,
       From: fromDate || "",
       To: toDate || "",
       Filters: filters,
-      AdminType: 205,
+      AdminType: 205,  // Closed trades
       Sort: "Id desc",
-      AccountType: "1",
+      AccountType: "1",  // Real accounts only
       PageSize: 2000,
       Skip: 0
     };
     
-    console.log(`[fetchClosedTradesBulk] Fetching trades for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-    // console.log("[fetchClosedTradesBulk] Request:", JSON.stringify(msg, null, 2));
-    const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchClosedTradesBulk | Topic: ${API_CONFIG.TOPICS.PLATFORM_CLOSE} | Request: AdminType=${msg.AdminType}, PageSize=${msg.PageSize}`);
+    
+    const result = await adminSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
-    // Response structure: { Messages: [{ AdminType, Messages: [...actual trades...], Total }] }
     const wrapper = data?.Messages?.[0];
     const trades = wrapper?.Messages || [];
     
-    if (!trades.length) {
-      console.error("[fetchClosedTradesBulk] API call unsuccessful: No trades returned");
-      return [];
-    }
+    // console.log(`[✅ fetchClosedTradesBulk] Received ${trades.length} trades`);
     
-    console.log(`[fetchClosedTradesBulk] Found ${trades.length} closed trades total (Total: ${wrapper?.Total || 'N/A'})`);
+    if (!trades.length) return [];
     
     // Filter trades by partnerId if specified
     let filteredTrades = trades;
     if (pid) {
       filteredTrades = trades.filter(t => t.TA?.T?.PartnerId === pid);
-      console.log(`[fetchClosedTradesBulk] Filtered to ${filteredTrades.length} trades for PartnerId ${pid}`);
+      // console.log(`[📊 fetchClosedTradesBulk] Filtered trades`);
     }
         
     return filteredTrades.map(t => ({
@@ -994,112 +1159,141 @@ export const fetchClosedTradesBulk = async (partnerId, fromDate, toDate, account
       openPrice: t.EP || 0,
       closePrice: t.CEP || 0,
       profitLoss: parseFloat(t.PL) || 0,
-      commission: parseFloat(t.Commission) || 0,  // ← Direct from XValley, not calculated
+      commission: parseFloat(t.Commission) || 0,
       openDate: t.EDT,
       closeDate: t.CEDT,
       partnerId: t.TA?.T?.PartnerId,
       _raw: t
     }));
     
-    
   } catch (error) {
-    console.error("[fetchClosedTradesBulk] API call unsuccessful:", error.message);
+    console.error("[❌ fetchClosedTradesBulk] Error");
+    // console.error("[❌ fetchClosedTradesBulk] Error stack:", error.stack);
     return [];
   }
 };
 
 /**
- * Fetch deposits/withdrawals transactions
+ * Fetch deposits/withdrawals transactions via TRADE WebSocket
  */
 export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '') => {
-  if (!wsSession) {
-    console.error("[fetchTransactionsBulk] API call unsuccessful: WebSocket not connected");
-    return [];
-  }
+  // console.log(`[💰 fetchTransactionsBulk] Starting fetch...`);
   
   try {
     const pid = partnerId || sessionPartnerId;
     
-    // Build the request - AdminType 100 = Transactions
-    // Add CompanyId filter per API docs (p7-9): correct format is Filter, FilterComparison, FilterType, FilterValueType
-    // CompanyId = 5 (Nommia) is the correct filter field for transactions
     const filters = [];
     if (sessionCompanyId) {
       filters.push({
-        Filter: String(sessionCompanyId),        // value to filter
-        FilterComparison: 1,                      // 1 = NumberEquals (per docs p7)
-        FilterType: "CompanyId",                  // column name
-        FilterValueType: 2                        // 2 = Number (per docs p7)
+        Filter: String(sessionCompanyId),        
+        FilterComparison: 1,                      
+        FilterType: "CompanyId",                  
+        FilterValueType: 2                        
       });
     }
   
-  const msg = {
-    MessageType: 100,
-    From: fromDate || '',
-    To: toDate || '',
-    Filters: filters,
-    AdminType: 100,
-    Sort: "Id desc",
-    AccountType: "1",
-    PageSize: 2000,
-    Skip: 0
-  };
-  
-  console.log(`[fetchTransactionsBulk] Fetching transactions for PartnerId ${pid}, Date range: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
-  // console.log("[fetchTransactionsBulk] Request:", JSON.stringify(msg));
-  const result = await wsSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  
-  // Response structure: { Messages: [{ AdminType, Messages: [...transactions...], Total }] }
-  const wrapper = data?.Messages?.[0];
-  const transactions = wrapper?.Messages || data?.Messages || [];
-  
-  if (!transactions.length) {
-    // console.log("[fetchTransactionsBulk] No transactions found - Response:", JSON.stringify(data, null, 2));
-    return [];
-  }
-  
-  console.log(`[fetchTransactionsBulk] Found ${transactions.length} transactions (Total: ${wrapper?.Total || 'N/A'})`);
-  
-  // Log first transaction to understand structure
-  if (transactions[0]) {
-    const t = transactions[0];
-    // console.log("[fetchTransactionsBulk] Sample transaction fields:", Object.keys(t));
-    // console.log("[fetchTransactionsBulk] Sample transaction data:", {
-   //   Id: t.Id,
-    //  DA: t.DA,  // Deposit Amount (reference)
-   //   AA: t.AA,  // Account Amount (actual deposit)
-     // SA: t.SA,  // Send Amount
-      //TS: t.TS,  // Transaction Side
-  //    D: t.D,    // Date
-    //  IsFiat: t.IsFiat,  // Is Fiat transaction
-      //'T.Name': t.T?.Name,  // Provider name
-     // 'TA.T': t.TA?.T,  // Trader info
-     // 'TrA.T': t.TrA?.T  // Alternative trader info
-   // });
-  }
+    const msg = {
+      MessageType: 100,
+      From: fromDate || '',
+      To: toDate || '',
+      Filters: filters,
+      AdminType: 100,  // Transactions
+      Sort: "Id desc",
+      AccountType: "1",
+      PageSize: 2000,
+      Skip: 0
+    };
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchTransactionsBulk | Topic: ${API_CONFIG.TOPICS.DEPOSITS} | Request: AdminType=${msg.AdminType}, PageSize=${msg.PageSize}, Filters=${filters.length}`);
+    
+    let result, data;
+    
+    try {
+      const adminSession = getSessionForTopic(API_CONFIG.TOPICS.LEADS);
+      result = await adminSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
+      data = typeof result === 'string' ? JSON.parse(result) : result;
+      // console.log(`[💰 fetchTransactionsBulk] Response received`);
+    } catch (callError) {
+      // console.error(`[💰 fetchTransactionsBulk] WAMP call failed`);
+      // console.warn(`[⚠️  fetchTransactionsBulk] DEPOSITS not available`);
+      return [];
+    }
+    
+    const wrapper = data?.Messages?.[0];
+    const transactions = wrapper?.Messages || data?.Messages || [];
+    
+    // console.log(`[✅ fetchTransactionsBulk] Received ${transactions.length} transactions`);
+    
+    // if (transactions[0]) {
+    //   console.log(`[💰 fetchTransactionsBulk] Sample transaction structure:`, {
+    //     hasId: !!transactions[0].Id,
+    //     hasDA: !!transactions[0].DA,
+    //     hasAA: !!transactions[0].AA,
+    //     hasTS: !!transactions[0].TS,
+    //     hasD: !!transactions[0].D
+    //   });
+    // }
   
   // Calculate totals before filtering
   const totalAmount = transactions.reduce((sum, t) => sum + (t.AA || t.Amount || 0), 0);
-  console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
+  // console.log(`[fetchTransactionsBulk] Total amount in response: $${totalAmount.toFixed(2)}`);
   
-  // Map transactions - handle various field name formats
-  // Per XValley docs: AA = Deposited amount (Account Amount), DA = Reference amount
-  // Debug first transaction to see all field values
-  if (transactions[0]) {
-    // console.log("[fetchTransactionsBulk] First transaction fields DEBUG:", {
- //     Id: transactions[0].Id,
-  //    TS: transactions[0].TS,  // Side
-   //   TSN: transactions[0].TSN,  // Type name
-   //   D: transactions[0].D,  // Date
-    //  DA: transactions[0].DA,  // Deposit Amount
-    //  AA: transactions[0].AA,  // Account Amount
-    //  SA: transactions[0].SA,  // Send Amount
-    //  'T.Name': transactions[0].T?.Name,  // Provider
-    //  IsFiat: transactions[0].IsFiat,  // Is Fiat
-    //  Reason: transactions[0].Reason  // Reason code
-    //});
-  }
+  // DEBUG: Log ALL fields from first few transactions to understand data structure
+  // comment.log(`[💰 fetchTransactionsBulk] DETAILED TRANSACTION STRUCTURE:`);
+  // for (let i = 0; i < Math.min(3, transactions.length); i++) {
+  //   const t = transactions[i];
+  //   console.log(`Transaction ${i + 1}:`, {
+  //     Id: t.Id,
+  //     TS: t.TS,        // Side: 1=Deposit, 2=Withdrawal
+  //     TSN: t.TSN,      // Type Name  
+  //     D: t.D,          // Date
+  //     DA: t.DA,        // Deposit Amount (reference)
+  //     AA: t.AA,        // Account Amount (balance?)
+  //     F: t.F,          // F field
+  //     R: t.R,          // R field  
+  //     SA: t.SA,        // Send Amount
+  //     'T.Name': t.T?.Name,  // Provider
+  //     IsFiat: t.IsFiat,
+  //     In: t.In,        // In field (might be amount)
+  //     Reason: t.Reason,
+  //     State: t.St || t.State,
+  //     allFieldNames: Object.keys(t).filter(k => !k.startsWith('_')).slice(0, 30)
+  //   });
+  // }
+  
+  // // Check what F and R fields actually contain - important for amount calculation
+  // console.log(`[💰 fetchTransactionsBulk] F & R Field Analysis (by deposit type):`);
+  // const hasFField = transactions.some(t => t.F !== undefined && t.F !== null);
+  // const hasRField = transactions.some(t => t.R !== undefined && t.R !== null);
+  // const fValues = transactions.slice(0, 5).map(t => `F=${t.F}`).join(', ');
+  // const rValues = transactions.slice(0, 5).map(t => `R=${t.R}`).join(', ');
+  // console.log(`F field present: ${hasFField}, sample values: ${fValues}`);
+  // console.log(`R field present: ${hasRField}, sample values: ${rValues}`);
+  
+  // // Calculate totals ONLY for deposits (TS=1) vs ALL transactions
+  // const depositsOnly = transactions.filter(t => t.TS === 1);
+  // const withdrawalsOnly = transactions.filter(t => t.TS === 2);
+  // const aaAllTx = transactions.reduce((sum, t) => sum + (t.AA || 0), 0);
+  // const aaDepositsRunningTotal = depositsOnly.reduce((sum, t) => sum + (t.AA || 0), 0);
+  // console.log(`[💰 Amount Calculation Check]:`);
+  // console.log(`  All transactions (${transactions.length}): Sum(AA) = $${aaAllTx.toFixed(2)}`);
+  // console.log(`  Deposits only (${depositsOnly.length}): Sum(AA) = $${aaDepositsRunningTotal.toFixed(2)}`);
+  // console.log(`  Withdrawals only (${withdrawalsOnly.length}): Count = ${withdrawalsOnly.length}`);
+  
+  // // DEBUG: Check nested objects for amounts - T, TA, TrA, TC, AC
+  // console.log(`[💰 fetchTransactionsBulk] Searching for deposit amount in nested objects:`);
+  // for (let i = 0; i < Math.min(2, depositsOnly.length); i++) {
+  //   const t = depositsOnly[i];
+  //   console.log(`Deposit ${i + 1} (Id=${t.Id}):`, {
+  //     'Direct fields': { AA: t.AA, DA: t.DA, F: t.F, R: t.R, In: t.In, SA: t.SA },
+  //     'T object': t.T ? { ...t.T }.toString().substring(0, 100) : 'null',
+  //     'TA object': t.TA ? { I: t.TA?.I, Name: t.TA?.Name } : 'null',
+  //     'TrA object': t.TrA ? { I: t.TrA?.I, Name: t.TrA?.Name } : 'null',
+  //     'TC object': t.TC ? { I: t.TC?.I, Name: t.TC?.Name } : 'null',
+  //     'AC object': t.AC ? { I: t.AC?.I, Name: t.AC?.Name } : 'null'
+  //   });
+  // }
   
   const mapped = transactions.map(t => {
     // Get username from nested structures - try multiple paths
@@ -1167,13 +1361,14 @@ export const fetchTransactionsBulk = async (partnerId, fromDate = '', toDate = '
     return sum + amt;
   }, 0);
   
-  console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
-  console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
-  console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
+  // console.log(`[fetchTransactionsBulk] Deposits: ${deposits.length} total (${daDeposits.length} via DA=$${daTotal.toFixed(2)}, ${aaDeposits.length} via AA=$${aaTotal.toFixed(2)})`);
+  // console.log(`[fetchTransactionsBulk] Withdrawals: ${withdrawals.length}`);
+  // console.log(`[fetchTransactionsBulk] Total deposit amount: $${totalDepositAmount.toFixed(2)}`);
   
   return mapped;
   } catch (error) {
-    console.error("[fetchTransactionsBulk] API call unsuccessful:", error.message);
+    console.error("[fetchTransactionsBulk] Error");
+    // console.error("[fetchTransactionsBulk] Error stack:", error.stack);
     return [];
   }
 };
@@ -1223,10 +1418,10 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   
   // Step 1: Get ALL trading accounts for this partner
   const tradingAccounts = await fetchTradingAccountsBulk(partnerId);
-  console.log(`Step 1: ${tradingAccounts.length} trading accounts for PartnerId ${partnerId}`);
+  // console.log(`Step 1: ${tradingAccounts.length} trading accounts`);
   
   if (tradingAccounts.length === 0) {
-    console.warn("No trading accounts found for this partner");
+    // console.warn("No trading accounts found for this partner");
     return [];
   }
   
@@ -1342,7 +1537,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     client._rawAccounts.push(acc);
   });
   
-  console.log(`Step 2: Grouped into ${Object.keys(clientsMap).length} unique clients`);
+  // console.log(`Step 2: Grouped into clients`);
   
   // Step 3: Try to fetch leads/customers data to get Approved, LastLogin, Status fields
   // This may return empty for some users (permission-based)
@@ -1350,7 +1545,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   try {
     const usernames = Object.keys(clientsMap);
     leadsData = await fetchIBClients(usernames);
-    console.log(`Step 3: Fetched ${leadsData.length} leads/customers records`);
+    // console.log(`Step 3: Fetched leads/customers records`);
     
     // Enrich clientsMap with leads data (Approved, LastLogin, Status)
     leadsData.forEach(lead => {
@@ -1371,13 +1566,13 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
       }
     });
   } catch (e) {
-    console.warn("Could not fetch leads data (may be permission-based):", e.message);
+    // console.warn("Could not fetch leads data (may be permission-based):", e.message);
   }
   
   // Step 4: Get closed trades for volume (lots) calculation
   // Revenue = Sum of XValley's Commission field (not calculated from volume × rate)
   const trades = await fetchClosedTradesBulk(partnerId);
-  console.log(`Step 4: ${trades.length} closed trades`);
+  // console.log(`Step 4: Closed trades`);
   
   // Build map: username -> { totalCommission, totalVolume, tradeCount }
   // Commission comes directly from XValley - includes all calculations (metals, instruments, etc)
@@ -1406,7 +1601,7 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
     totalRevenue += comm;  // Base commission = sum of XValley commissions
   });
   
-  console.log(`Total Volume: ${totalVolume.toFixed(2)} lots | Base Commission: $${totalRevenue.toFixed(2)} (XValley, no calculations)`);
+  // console.log(`Total Volume & Commission calculated`);
   
   // Step 5: Build final client list with proper Active, Pending, KYC, Lots
   // BaseCommission = Sum of XValley's Commission field per user (not calculated)
@@ -1513,29 +1708,10 @@ export const fetchCompleteClientData = async (forcePartnerId = null) => {
   const withLots = realClients.filter(c => c.lots > 0).length;
   const withTrades = realClients.filter(c => c.hasTrades).length;
   
-  console.log(`
-=== Client Summary (REAL ACCOUNTS ONLY) ===
-Total Clients with Real Accounts: ${realClients.length}
-(Filtered from ${enrichedClients.length} total users)
-
---- Activity Status ---
-Active: ${activeCount}
-Inactive: ${inactiveCount}
-With Trades: ${withTrades}
-
---- KYC Status (from T.Approved) ---
-Approved: ${approvedKycCount}
-Pending (not approved): ${pendingKycCount}
-
---- Financial (Real Accounts) ---
-With Deposits: ${withDeposits}
-With Equity: ${withEquity}
-With Lots: ${withLots}
-======================
-  `);
+  // console.log(`Client Summary`);
   
-  // Log first 5 clients for verification with all status fields
-  realClients.slice(0, 5).forEach((c, i) => {
+  // // Log first 5 clients for verification with all status fields
+  // realClients.slice(0, 5).forEach((c, i) => {
     /* console.log(`Client ${i + 1}:`, {
       username: c.username,
       country: c.country,
@@ -1557,7 +1733,7 @@ With Lots: ${withLots}
       tradeCount: c.tradeCount
     });
     */
-  });
+  // });
   
   // console.log("=== Client Data Complete ===");
   return realClients;
@@ -1570,7 +1746,6 @@ With Lots: ${withLots}
 export const fetchNetworkStats = async () => {
   const partnerId = sessionPartnerId;
   
-  // Get ALL closed trades for this IB (no date filter = all time)
   const trades = await fetchClosedTradesBulk(partnerId, '', '');
   
   let totalVolume = 0;
@@ -1580,17 +1755,16 @@ export const fetchNetworkStats = async () => {
   trades.forEach(t => {
     const vol = parseFloat(t.volume) || 0;
     const pl = parseFloat(t.profitLoss) || 0;
-    const comm = parseFloat(t.commission) || 0;  // ← 100% from XValley API
-    
+    const comm = parseFloat(t.commission) || 0;  
     totalVolume += vol;
     totalPL += pl;
-    totalRevenue += comm;  // Sum XValley commissions (not calculations)
+    totalRevenue += comm;  
   });
   
   return {
     totalVolume,
     totalPL,
-    totalRevenue,  // Base commission = sum from XValley
+    totalRevenue, 
     tradesCount: trades.length,
     trades
   };
@@ -1669,10 +1843,86 @@ export const fetchVolumeHistory = async (timeRange = 'This Month') => {
     totalRevenue += comm;  // Sum XValley commissions (no local calculations)
   });
   
-  // Revenue = Base Commission from XValley (already filtered by PartnerId in fetchClosedTradesBulk)
-  //console.log(`[fetchVolumeHistory] ${timeRange}: ${trades.length} trades | Volume=${totalVolume.toFixed(2)} lots | Commission=$${totalRevenue.toFixed(2)} (XValley only)`);
+  // Calculate tier bonus based on 3-month rolling commission average
+  let tierBonus = 0;
+  let tierInfo = { tierRate: 0, tierLabel: 'Base', bonus: 0, avgCommission: 0, monthsInHistory: 0 };
+  let totalRevenueWithBonus = totalRevenue;
   
-  return { trades, totalVolume, totalPL, totalRevenue, fromDate, toDate: now };
+  try {
+    // Only calculate bonus if we have revenue in this period
+    if (totalRevenue > 0) {
+      const history = await fetch3MonthCommissionHistory();
+      tierInfo = calculateTierBonus(history, totalRevenue);
+      tierBonus = tierInfo.bonus;
+      totalRevenueWithBonus = totalRevenue + tierBonus;
+      
+      console.log(`[fetchVolumeHistory] ${timeRange}: Tier calculated`);
+    }
+  } catch (err) {
+    // console.warn(`[fetchVolumeHistory] Could not calculate tier bonus`);
+    // Fallback: just use base commission without bonus
+    totalRevenueWithBonus = totalRevenue;
+  }
+  
+  // Revenue = Base Commission from XValley + Tier Bonus (already filtered by PartnerId in fetchClosedTradesBulk)
+  
+  return { trades, totalVolume, totalPL, totalRevenue: totalRevenueWithBonus, totalRevenueBefore: totalRevenue, tierBonus, tierInfo, fromDate, toDate: now };
+};
+
+/**
+ * Calculate tier bonus based on 3-month rolling average commission
+ * 
+ * Tier Logic:
+ * - Tier 3: Average >= $4500 → 10% bonus
+ * - Tier 2: Average >= $1000 → 8% bonus
+ * - Tier 1: Average >= $450 → 4% bonus
+ * - Base: Average < $450 → 0% bonus
+ * 
+ * @param {number[]} commissionHistory - Array of monthly commissions (oldest first)
+ * @param {number} currentMonthCommission - Current month's base commission from XValley
+ * @returns {Object} { tierRate: number, tierLabel: string, bonus: number }
+ */
+export const calculateTierBonus = (commissionHistory, currentMonthCommission) => {
+  // Ensure we have valid history array
+  if (!Array.isArray(commissionHistory) || commissionHistory.length === 0) {
+    return { tierRate: 0, tierLabel: 'New', bonus: 0, avgCommission: 0, monthsInHistory: 0 };
+  }
+  
+  // Calculate average from available months (1, 2, or 3 months)
+  // Include zeros if month had no trades - they count toward the rolling average
+  const validMonths = commissionHistory.filter(c => typeof c === 'number').length;
+  
+  if (validMonths === 0) {
+    return { tierRate: 0, tierLabel: 'New', bonus: 0, avgCommission: 0, monthsInHistory: 0 };
+  }
+  
+  // Average: sum all months / number of months in history (1, 2, or 3)
+  const avgCommission = commissionHistory.reduce((sum, c) => sum + (c || 0), 0) / validMonths;
+  
+  let tierRate = 0;
+  let tierLabel = 'Base';
+  
+  if (avgCommission >= 4500) {
+    tierRate = 0.10;
+    tierLabel = 'Tier 3 (+10%)';
+  } else if (avgCommission >= 1000) {
+    tierRate = 0.08;
+    tierLabel = 'Tier 2 (+8%)';
+  } else if (avgCommission >= 450) {
+    tierRate = 0.04;
+    tierLabel = 'Tier 1 (+4%)';
+  }
+  
+  // Bonus is applied to CURRENT month's commission (not the average)
+  const bonus = Math.round(currentMonthCommission * tierRate * 100) / 100;
+  
+  return {
+    tierRate,
+    tierLabel,
+    bonus,
+    avgCommission: Math.round(avgCommission * 100) / 100,
+    monthsInHistory: validMonths
+  };
 };
 
 /**
@@ -1729,137 +1979,191 @@ export const fetchCurrentUser = async () => {
 };
 
 export const fetchTradingAccounts = async (username) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.TRADERS);
+  // console.log(`[👤 fetchTradingAccounts] START - Fetching accounts`);
   
-  const filters = [{
-    Filter: username,
-    FilterComparison: 2,  // TextEquals
-    FilterType: "Trader.Alias",
-    FilterValueType: 1    // Text
-  }];
+  try {
+    const filters = [{
+      Filter: username,
+      FilterComparison: 2,  // TextEquals
+      FilterType: "Trader.Alias",
+      FilterValueType: 1    // Text
+    }];
+    
+    const msg = {
+      MessageType: 100,
+      Filters: filters,
+      AdminType: 8,
+      AccountType: "12"
+    };
+    
+    // console.log(`[👤 fetchTradingAccounts] Calling TRADERS topic`);
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchTradingAccounts | Topic: ${API_CONFIG.TOPICS.TRADERS} | Request: AdminType=${msg.AdminType}, AccountType=${msg.AccountType}, Filters=${filters.length}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    // Response structure: { Messages: [{ AdminType, Messages: [...actual accounts...], Total }] }
+    const wrapper = data?.Messages?.[0];
+    const accounts = wrapper?.Messages || [];
+    
+    // console.log(`[👤 fetchTradingAccounts] Retrieved accounts`);
   
-  const msg = {
-    MessageType: 100,
-    Filters: filters,
-    AdminType: 8,
-    AccountType: "12"
-  };
-  
-  const result = await wsSession.call(API_CONFIG.TOPICS.TRADERS, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  
-  // Response structure: { Messages: [{ AdminType, Messages: [...actual accounts...], Total }] }
-  const wrapper = data?.Messages?.[0];
-  const accounts = wrapper?.Messages || [];
-  
- // console.log(`fetchTradingAccounts for ${username}: found ${accounts.length} accounts`);
-  
-  // Map to consistent format with id field
-  return accounts.map(acc => ({
-    id: acc.I,
-    name: acc.Name,
-    username: acc.T?.A,
-    email: acc.T?.E,
-    active: acc.A === true,
-    equity: acc.E || 0,
-    balance: acc.BAL || 0,
-    accountType: acc.TATD?.Type,  // 1=Real, 2=Demo
-    isReal: acc.TATD?.Type === 1,
-    _raw: acc
-  }));
+    // Map to consistent format with id field
+    return accounts.map(acc => ({
+      id: acc.I,
+      name: acc.Name,
+      username: acc.T?.A,
+      email: acc.T?.E,
+      active: acc.A === true,
+      equity: acc.E || 0,
+      balance: acc.BAL || 0,
+      accountType: acc.TATD?.Type,  // 1=Real, 2=Demo
+      isReal: acc.TATD?.Type === 1,
+      _raw: acc
+    }));
+  } catch (error) {
+    console.error('[👤 fetchTradingAccounts] Error:', error);
+    return [];
+  }
 };
 
 export const fetchClientTrades = async (accountId, fromDate, toDate) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.PLATFORM_CLOSE);
+  // console.log(`[📊 fetchClientTrades] START - Fetching trades`);
   
-  const filters = [{
-    Filter: String(accountId),
-    FilterComparison: 1,
-    FilterType: "TraderAccountId",
-    FilterValueType: 2
-  }];
+  try {
+    const filters = [{
+      Filter: String(accountId),
+      FilterComparison: 1,
+      FilterType: "TraderAccountId",
+      FilterValueType: 2
+    }];
+    
+    const msg = {
+      MessageType: 100,
+      From: fromDate || "",
+      To: toDate || "",
+      Filters: filters,
+      AdminType: 205,
+      AccountType: "1",
+      PageSize: 500
+    };
+    
+    // console.log(`[📊 fetchClientTrades] Calling PLATFORM_CLOSE topic`);
+    // console.log(`[📊 fetchClientTrades] DateRange: ${fromDate || 'ALL'} to ${toDate || 'ALL'}`);
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchClientTrades | Topic: ${API_CONFIG.TOPICS.PLATFORM_CLOSE} | Request: AdminType=${msg.AdminType}, AccountType=${msg.AccountType}, PageSize=${msg.PageSize}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    // Response structure: { Messages: [{ AdminType, Messages: [...actual trades...], Total }] }
+    const wrapper = data?.Messages?.[0];
+    const trades = wrapper?.Messages || [];
+    
+    // console.log(`[📊 fetchClientTrades] Retrieved trades`);
   
-  const msg = {
-    MessageType: 100,
-    From: fromDate || "",
-    To: toDate || "",
-    Filters: filters,
-    AdminType: 205,
-    AccountType: "1",
-    PageSize: 500
-  };
-  
- // console.log(`fetchClientTrades for account ${accountId}`);
-  const result = await wsSession.call(API_CONFIG.TOPICS.PLATFORM_CLOSE, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  
-  // Response structure: { Messages: [{ AdminType, Messages: [...actual trades...], Total }] }
-  const wrapper = data?.Messages?.[0];
-  const trades = wrapper?.Messages || [];
-  
- // console.log(`fetchClientTrades for account ${accountId}: found ${trades.length} trades`);
-  
-  return trades.map(t => ({
-    id: t.Ticket || t.I,
-    instrument: t['Instrument.Name'] || t.Instrument?.Name || 'Unknown',
-    side: t.S === 1 ? 'Buy' : 'Sell',
-    volume: t.VU || 0,
-    openPrice: t.EP || 0,
-    closePrice: t.CEP || 0,
-    profitLoss: t.PL || 0,
-    openDate: t.EDT,
-    closeDate: t.CEDT
-  }));
+    return trades.map(t => ({
+      id: t.Ticket || t.I,
+      instrument: t['Instrument.Name'] || t.Instrument?.Name || 'Unknown',
+      side: t.S === 1 ? 'Buy' : 'Sell',
+      volume: t.VU || 0,
+      openPrice: t.EP || 0,
+      closePrice: t.CEP || 0,
+      profitLoss: t.PL || 0,
+      openDate: t.EDT,
+      closeDate: t.CEDT
+    }));
+  } catch (error) {
+    console.error('[📊 fetchClientTrades] Error:', error);
+    return [];
+  }
 };
 
 export const fetchClientTransactions = async (accountId) => {
-  if (!wsSession) throw new Error("Not connected");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.DEPOSITS);
+  // console.log(`[💰 fetchClientTransactions] START - Fetching transactions`);
   
-  const filters = [{
-    Filter: String(accountId),
-    FilterComparison: 1,
-    FilterType: "TraderAccountId",
-    FilterValueType: 2
-  }];
-  
-  const msg = {
-    MessageType: 100,
-    Filters: filters,
-    AdminType: 100,
-    AccountType: "1",
-    PageSize: 200
-  };
-  
-  const result = await wsSession.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  
-  return (data?.Messages || []).map(t => ({
-    id: t.Id,
-    amount: t.AA || 0,
-    date: t.D,
-    type: t.TSN,
-    side: t.TS,
-    sideLabel: t.TS === 1 ? 'Deposit' : t.TS === 2 ? 'Withdrawal' : 'Adjustment',
-    state: t.StS
-  }));
+  try {
+    const filters = [{
+      Filter: String(accountId),
+      FilterComparison: 1,
+      FilterType: "TraderAccountId",
+      FilterValueType: 2
+    }];
+    
+    const msg = {
+      MessageType: 100,
+      Filters: filters,
+      AdminType: 100,
+      AccountType: "1",
+      PageSize: 200
+    };
+    
+    // console.log(`[💰 fetchClientTransactions] Calling DEPOSITS topic`);
+    
+    // Log API call details for XValley support
+    console.log(`[XVALLEY_API] fetchClientTransactions | Topic: ${API_CONFIG.TOPICS.DEPOSITS} | Request: AdminType=${msg.AdminType}, AccountType=${msg.AccountType}, PageSize=${msg.PageSize}`);
+    
+    const result = await session.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    const transactions = data?.Messages || [];
+    // console.log(`[💰 fetchClientTransactions] Retrieved transactions`);
+    
+    return transactions.map(t => ({
+      id: t.Id,
+      amount: t.AA || 0,
+      date: t.D,
+      type: t.TSN,
+      side: t.TS,
+      sideLabel: t.TS === 1 ? 'Deposit' : t.TS === 2 ? 'Withdrawal' : 'Adjustment',
+      state: t.StS
+    }));
+  } catch (error) {
+    console.error('[💰 fetchClientTransactions] Error:', error);
+    return [];
+  }
 };
 
 
 
 // Subscription stubs
 export const subscribeToTradeUpdates = (callback) => {
-  if (!wsSession || !wsSessionId) return;
-  wsSession.subscribe(wsSessionId, (args) => {
+  // Both ADMIN and TRADE sessions can use wsSessionId for subscriptions
+  // Use admin session since it's more stable for session subscriptions
+  if (!wsSessionAdmin || !wsSessionId) {
+    // console.warn("[🔔 subscribeToTradeUpdates] Not connected");
+    return;
+  }
+  
+  // console.log("[🔔 subscribeToTradeUpdates] Subscribing to trade updates");
+  wsSessionAdmin.subscribe(wsSessionId, (args) => {
     const msg = typeof args[0] === 'string' ? JSON.parse(args[0]) : args[0];
-    if (msg.MessageType === 20) callback(msg);
+    if (msg.MessageType === 20) {
+      // console.log("[🔔 subscribeToTradeUpdates] Trade update received");
+      callback(msg);
+    }
   });
 };
 
 export const subscribeToAccountEvents = (callback) => {
-  if (!wsSession || !wsSessionId) return;
-  wsSession.subscribe(wsSessionId, (args) => {
+  if (!wsSessionAdmin || !wsSessionId) {
+    // console.warn("[🔔 subscribeToAccountEvents] Not connected");
+    return;
+  }
+  
+  // console.log("[🔔 subscribeToAccountEvents] Subscribing to account events");
+  wsSessionAdmin.subscribe(wsSessionId, (args) => {
     const msg = typeof args[0] === 'string' ? JSON.parse(args[0]) : args[0];
-    if (msg.MessageType === 30 || msg.MessageType === 40) callback(msg);
+    if (msg.MessageType === 30 || msg.MessageType === 40) {
+      // console.log(`[🔔 subscribeToAccountEvents] Account event received`);
+      callback(msg);
+    }
   });
 };
 
@@ -1868,24 +2172,59 @@ export const subscribeToSystemAlerts = (callback) => {
 };
 
 export const fetchAccountTypes = async () => {
-  if (!wsSession) return [];
-  const result = await wsSession.call(API_CONFIG.TOPICS.ACCOUNT_TYPES, [JSON.stringify({ MessageType: 100 })]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  return data?.Messages || [];
+  const session = getSessionForTopic(API_CONFIG.TOPICS.ACCOUNT_TYPES);
+  // console.log("[📋 fetchAccountTypes] START - Fetching account types");
+  
+  try {
+    const result = await session.call(API_CONFIG.TOPICS.ACCOUNT_TYPES, [JSON.stringify({ MessageType: 100 })]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    const types = data?.Messages || [];
+    // console.log(`[📋 fetchAccountTypes] Retrieved account types`);
+    
+    return types;
+  } catch (error) {
+    console.error("[📋 fetchAccountTypes] Error:", error);
+    return [];
+  }
 };
 
 export const fetchAccountLevels = async () => {
-  if (!wsSession) return [];
-  const result = await wsSession.call(API_CONFIG.TOPICS.ACCOUNT_LEVELS, [JSON.stringify({ MessageType: 100 })]);
-  const data = typeof result === 'string' ? JSON.parse(result) : result;
-  return data?.Messages || [];
+  const session = getSessionForTopic(API_CONFIG.TOPICS.ACCOUNT_LEVELS);
+  // console.log("[📊 fetchAccountLevels] START - Fetching account levels");
+  
+  try {
+    const result = await session.call(API_CONFIG.TOPICS.ACCOUNT_LEVELS, [JSON.stringify({ MessageType: 100 })]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    const levels = data?.Messages || [];
+    // console.log(`[📊 fetchAccountLevels] Retrieved account levels`);
+    
+    return levels;
+  } catch (error) {
+    console.error("[📊 fetchAccountLevels] Error:", error);
+    return [];
+  }
 };
 
 export const saveUserDetails = async (userData) => {
-  if (!wsSession) throw new Error("Not connected");
-  const msg = { MessageType: 100, Messages: [userData] };
-  const result = await wsSession.call(API_CONFIG.TOPICS.SAVE_USER, [JSON.stringify(msg)]);
-  return typeof result === 'string' ? JSON.parse(result) : result;
+  const session = getSessionForTopic(API_CONFIG.TOPICS.SAVE_USER);
+  // console.log("[💾 saveUserDetails] START - Saving user details");
+  
+  try {
+    const msg = { MessageType: 100, Messages: [userData] };
+    
+    // console.log("[💾 saveUserDetails] Calling SAVE_USER topic");
+    const result = await session.call(API_CONFIG.TOPICS.SAVE_USER, [JSON.stringify(msg)]);
+    const data = typeof result === 'string' ? JSON.parse(result) : result;
+    
+    // console.log("[💾 saveUserDetails] User saved successfully");
+    
+    return data;
+  } catch (error) {
+    console.error("[💾 saveUserDetails] Error saving user:", error);
+    throw error;
+  }
 };
 
 export const resetUserPassword = async (username) => {
@@ -1901,14 +2240,15 @@ export const resetUserPassword = async (username) => {
  * @returns {Promise<{success: boolean, message: string}>}
  */
 export const changePasswordForLoggedInUser = async (oldPassword, newPassword) => {
-  if (!wsSession) throw new Error("Not connected to XValley");
+  const session = getSessionForTopic(API_CONFIG.TOPICS.RESET_PASSWORD);
+  
   if (!getAccessToken()) throw new Error("No access token available");
   
-  console.log("[changePassword] Starting password change...");
+  console.log("[🔐 changePasswordForLoggedInUser] START - Attempting password change...");
   
   // Method 1: Try HTTP endpoint first (most reliable)
   try {
-    console.log("[changePassword] Attempting HTTP method via /profile/reset/");
+    console.log("[🔐 changePasswordForLoggedInUser] Attempting HTTP method via /profile/reset/");
     
     const httpRes = await fetch(`${API_CONFIG.API_BASE_URL}/profile/reset/`, {
       method: 'POST',
@@ -1924,22 +2264,21 @@ export const changePasswordForLoggedInUser = async (oldPassword, newPassword) =>
     });
     
     const responseText = await httpRes.text();
-    console.log("[changePassword] HTTP Response Status:", httpRes.status);
-    console.log("[changePassword] HTTP Response Body:", responseText);
+    console.log(`[🔐 changePasswordForLoggedInUser] HTTP Response Status: ${httpRes.status}`);
     
     if (httpRes.ok) {
-      console.log("[changePassword] ✅ HTTP method succeeded");
+      console.log("[🔐 changePasswordForLoggedInUser] ✅ HTTP method succeeded");
       return { success: true, message: "Password updated successfully" };
     }
     
-    console.warn("[changePassword] HTTP method failed with status:", httpRes.status);
+    console.warn("[🔐 changePasswordForLoggedInUser] ⚠️  HTTP method failed, falling back to WAMP...");
   } catch (httpError) {
-    console.warn("[changePassword] HTTP method error:", httpError.message);
+    console.warn("[🔐 changePasswordForLoggedInUser] HTTP method error:", httpError.message);
   }
   
   // Method 2: Fallback to WAMP/WebSocket method
   try {
-    console.log("[changePassword] Attempting WAMP method via com.fxplayer.resetpassword");
+    console.log("[🔐 changePasswordForLoggedInUser] Attempting WAMP method via RESET_PASSWORD topic");
     
     const msg = {
       MessageType: 100,
@@ -1947,23 +2286,22 @@ export const changePasswordForLoggedInUser = async (oldPassword, newPassword) =>
         Email: wsSessionId,  // Use session username/email
         OldPassword: oldPassword,
         NewPassword: newPassword,
-        ConfirmPassword: newPassword === newPassword  // Always true (passwords just validated)
+        ConfirmPassword: newPassword === newPassword  // Always true
       }]
     };
     
-    const result = await wsSession.call(API_CONFIG.TOPICS.RESET_PASSWORD, [JSON.stringify(msg)]);
+    console.log("[🔐 changePasswordForLoggedInUser] Calling RESET_PASSWORD via ADMIN WebSocket...");
+    const result = await session.call(API_CONFIG.TOPICS.RESET_PASSWORD, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
     
-    console.log("[changePassword] WAMP Response:", JSON.stringify(data, null, 2));
-    
     if (data.MessageType === 200 || data.MessageType === '200') {
-      console.log("[changePassword] ✅ WAMP method succeeded");
+      console.log("[🔐 changePasswordForLoggedInUser] ✅ WAMP method succeeded");
       return { success: true, message: "Password updated successfully via WAMP" };
     } else {
       throw new Error(data.Messages?.[0] || "WAMP password change failed");
     }
   } catch (wampError) {
-    console.error("[changePassword] WAMP method error:", wampError);
+    console.error("[🔐 changePasswordForLoggedInUser] WAMP method error:", wampError);
     return { 
       success: false, 
       message: `Password change failed: ${wampError.message}` 
@@ -1973,19 +2311,17 @@ export const changePasswordForLoggedInUser = async (oldPassword, newPassword) =>
 
 /**
  * Submit withdrawal request to XValley via WebSocket Admin API
- * Sends withdrawal to com.fxplayer.deposit topic
+ * Sends withdrawal to com.fxplayer.deposit topic (DEPOSITS topic)
  * Will appear in XValley admin dashboard for actionable withdrawal approval
  * @param {object} withdrawalData - Withdrawal details
  * @returns {Promise<{success: boolean, message: string, data?: object}>}
  */
 export const submitWithdrawalRequest = async (withdrawalData) => {
-  if (!wsSession) {
-    console.error("[Withdrawal] WebSocket not connected");
-    throw new Error("Not connected to XValley WebSocket");
-  }
+  const session = getSessionForTopic(API_CONFIG.TOPICS.DEPOSITS);
+  
+  console.log("[💰 submitWithdrawalRequest] START - Submitting withdrawal request amount:", withdrawalData?.amount);
   
   try {
-    // console.log("[Withdrawal] Submitting withdrawal request:", withdrawalData);
     
     // Build withdrawal message per XValley Backoffice API spec (page 18-19)
     // TS: 2 = Withdrawal (vs 1 = Deposit)
@@ -2008,18 +2344,22 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
       }]
     };
     
-    // console.log("[Withdrawal] Sending to XValley deposit topic:", JSON.stringify(msg, null, 2));
+    console.log("[💰 submitWithdrawalRequest] Calling DEPOSITS topic via TRADE WebSocket with TS=2 (Withdrawal)...");
+    console.log("[💰 submitWithdrawalRequest] Request details:", {
+      amount: withdrawalData.amount,
+      fee: withdrawalData.fee,
+      accountId: withdrawalData.accountId,
+      typeId: withdrawalData.typeId
+    });
     
     // Call XValley WebSocket deposit topic
-    const result = await wsSession.call('com.fxplayer.deposit', [JSON.stringify(msg)]);
+    const result = await session.call(API_CONFIG.TOPICS.DEPOSITS, [JSON.stringify(msg)]);
     const data = typeof result === 'string' ? JSON.parse(result) : result;
-    
-    // console.log("[Withdrawal] Response from XValley:", JSON.stringify(data, null, 2));
     
     // Check response status
     if (data.MessageType === 200) {
       // MessageType 200 = OK
-      console.log("[Withdrawal] ✅ Withdrawal submitted successfully to XValley admin");
+      console.log("[💰 submitWithdrawalRequest] ✅ Withdrawal submitted successfully to XValley admin");
       return { 
         success: true, 
         message: 'Withdrawal submitted successfully. Check your XValley admin dashboard.',
@@ -2028,11 +2368,11 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
     } else if (data.MessageType === -3) {
       // MessageType -3 = Error
       const errorMsg = data.Messages?.[0] || 'Withdrawal submission failed';
-      console.error("[Withdrawal] ❌ XValley error:", errorMsg);
+      console.error("[💰 submitWithdrawalRequest] ❌ XValley error:", errorMsg);
       throw new Error(errorMsg);
     } else {
       // Unexpected response
-    //  console.log("[Withdrawal] ℹ️ Unexpected response type:", data.MessageType);
+      console.log("[💰 submitWithdrawalRequest] ℹ️  Unexpected response type:", data.MessageType);
       return { 
         success: true, 
         message: 'Withdrawal submitted',
@@ -2040,7 +2380,7 @@ export const submitWithdrawalRequest = async (withdrawalData) => {
       };
     }
   } catch (error) {
-    console.error("[Withdrawal] ❌ Error submitting withdrawal:", error);
+    console.error("[💰 submitWithdrawalRequest] ❌ Error submitting withdrawal:", error);
     return { 
       success: false, 
       message: error.message || 'Failed to submit withdrawal request'
@@ -2920,14 +3260,13 @@ export const isAdminUser = () => {
 };
 
 export const fetchAllUsersForManagement = async () => {
-  if (!wsSession) throw new Error("Not connected");
   if (!isAdminUser()) throw new Error("Only admins can fetch user management data");
   
   try {
-    // console.log("[fetchAllUsersForManagement] Fetching all COMPANY users from XValley...");
+    console.log("[👥 fetchAllUsersForManagement] START - Fetching all company users...");
     const allUsers = await fetchAllCompanyUsers();
     
-    // console.log(`[fetchAllUsersForManagement] Got ${allUsers.length} users from XValley, fetching roles from Supabase...`);
+    console.log(`[👥 fetchAllUsersForManagement] ✅ Got ${allUsers.length} users from XValley, fetching roles from Supabase...`);
     
     // Fetch all user roles from Supabase
     const { data: userRoles, error: err } = await supabase
@@ -2935,7 +3274,7 @@ export const fetchAllUsersForManagement = async () => {
       .select('*');
     
     if (err) {
-      console.error('[fetchAllUsersForManagement] Supabase error:', err);
+      console.error('[👥 fetchAllUsersForManagement] ⚠️  Supabase error:', err);
       // Continue with users only if Supabase fails
       return allUsers.map(user => ({
         ...user,
@@ -2965,7 +3304,7 @@ export const fetchAllUsersForManagement = async () => {
       };
     });
   } catch (error) {
-    console.error("[fetchAllUsersForManagement] Error:", error);
+    console.error("[👥 fetchAllUsersForManagement] ❌ Error:", error);
     throw error;
   }
 };
@@ -2984,11 +3323,15 @@ export const updateUserRole = async (userId, role, assignedCountry = null, regio
   if (!isAdminUser()) throw new Error("Only admins can update user roles");
   
   try {
-    // console.log(`[updateUserRole] Updating user ${userId} to role: ${role} in both XValley and Supabase`);
+    console.log(`[👤 updateUserRole] START - Updating user ${userId} role to: ${role}`);
     
     // Step 1: Update in XValley via WebSocket (if userData provided)
-    if (userData && wsSession) {
+    if (userData) {
+      const session = getSessionForTopic(API_CONFIG.TOPICS.SAVE_USER);
+      
       try {
+        console.log(`[👤 updateUserRole] Updating in XValley...`);
+        
         // Map role name to XValley AccessRoles format
         // Nommia roles: IB, CountryManager, RegionalManager
         // Sent to XValley as AccessRoles (may need adjustment based on XValley's expected format)
@@ -3010,20 +3353,20 @@ export const updateUserRole = async (userId, role, assignedCountry = null, regio
           Messages: [xvalleyUpdateData] 
         };
         
-        // console.log(`[updateUserRole] Sending role update to XValley:`, JSON.stringify(msg, null, 2));
+        console.log(`[👤 updateUserRole] Calling SAVE_USER topic via ADMIN WebSocket...`);
         
-        const xvalleyResult = await wsSession.call(API_CONFIG.TOPICS.SAVE_USER, [JSON.stringify(msg)]);
+        const xvalleyResult = await session.call(API_CONFIG.TOPICS.SAVE_USER, [JSON.stringify(msg)]);
         const xvalleyData = typeof xvalleyResult === 'string' ? JSON.parse(xvalleyResult) : xvalleyResult;
         
         // Check for error response from XValley
         if (xvalleyData.MessageType === -3) {
-          console.warn(`[updateUserRole] XValley returned error: ${xvalleyData.Messages?.[0] || 'Unknown error'}`);
+          console.warn(`[👤 updateUserRole] ⚠️  XValley returned error: ${xvalleyData.Messages?.[0] || 'Unknown error'}`);
           // Don't throw - continue to save locally even if XValley update fails
         } else if (xvalleyData.MessageType === 200) {
-          // console.log(`[updateUserRole] Successfully updated user ${userId} in XValley`);
+          console.log(`[👤 updateUserRole] ✅ Successfully updated user ${userId} in XValley`);
         }
       } catch (xvalleyError) {
-        console.warn('[updateUserRole] XValley update warning (will still save locally):', xvalleyError.message);
+        console.warn('[👤 updateUserRole] ⚠️  XValley update warning (will still save locally):', xvalleyError.message);
         // Don't throw - we'll save locally as fallback
       }
     }

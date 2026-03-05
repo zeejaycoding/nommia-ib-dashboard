@@ -18,14 +18,21 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
-      // 3. Proxy WebSocket (Admin Node) - Using Vanex's shared admin platform
-      // Nommia uses XValley's shared infrastructure
+      // 3. Proxy WebSocket - ADMIN (Backoffice operations: users, accounts, settings)
       '/ws-admin': {
         target: 'wss://platform-admin.vanex.site',
         ws: true,
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/ws-admin/, '/ws')
+      },
+      // 4. Proxy WebSocket - TRADE (Trading operations: trades, deposits, transactions)
+      '/ws-trade': {
+        target: 'wss://platform-trade.vanex.site',
+        ws: true,
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/ws-trade/, '/ws')
       }
     }
   }
