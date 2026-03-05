@@ -6,6 +6,33 @@ const speakeasy = require('speakeasy');
 const httpProxy = require('http-proxy');
 require('dotenv').config();
 
+// ============= WEBSOCKET PROXY SETUP =============
+// Proxies deployed frontend WebSocket connections to vanex.site servers
+// (mirrors Vite dev-server proxy behaviour for production)
+const wsAdminProxy = httpProxy.createProxyServer({
+  target: 'wss://platform-admin.vanex.site',
+  ws: true,
+  secure: true,
+  changeOrigin: true
+});
+
+const wsTradeProxy = httpProxy.createProxyServer({
+  target: 'wss://platform-trade.vanex.site',
+  ws: true,
+  secure: true,
+  changeOrigin: true
+});
+
+wsAdminProxy.on('error', (err, req, socket) => {
+  console.error('[WS-Proxy-Admin] ❌ Error:', err.message);
+  if (socket && socket.writable) socket.end();
+});
+
+wsTradeProxy.on('error', (err, req, socket) => {
+  console.error('[WS-Proxy-Trade] ❌ Error:', err.message);
+  if (socket && socket.writable) socket.end();
+});
+
 // ============= EARLY STARTUP LOGGING =============
 console.log('\n========================================');
 console.log('[STARTUP] Backend initializing...');
@@ -1384,27 +1411,6 @@ app.use((req, res) => {
 const port = process.env.PORT || 5000;
 const host = '0.0.0.0';
 
-// ============= WEBSOCKET PROXY =============
-// Proxy WebSocket connections through the backend to avoid CORS/firewall issues
-// on the XValley platform servers when connecting from deployed frontend.
-const wsProxy = httpProxy.createProxyServer({
-  changeOrigin: true,
-  secure: true,
-  ws: true
-});
-
-wsProxy.on('error', (err, req, socket) => {
-  console.error('[WS Proxy] Error:', err.message);
-  if (socket && socket.writable) {
-    socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-  }
-});
-
-wsProxy.on('open', (proxySocket) => {
-  console.log('[WS Proxy] Connection opened');
-  proxySocket.on('error', (err) => console.error('[WS Proxy] Socket error:', err.message));
-});
-
 // Start server with detailed logging
 const server = app.listen(port, host, () => {
   console.log('\n========================================');
@@ -1415,18 +1421,19 @@ const server = app.listen(port, host, () => {
 });
 
 // ============= WEBSOCKET UPGRADE HANDLER =============
-// Intercept HTTP upgrade requests and proxy them to the correct XValley server
+// Intercepts WebSocket upgrade requests and proxies them to the correct vanex.site server.
+// This mirrors the Vite dev-proxy so production deployments work the same as localhost.
 server.on('upgrade', (req, socket, head) => {
-  const url = req.url || '';
-  if (url.startsWith('/ws-admin')) {
-    console.log('[WS Proxy] Upgrading /ws-admin → wss://platform-admin.vanex.site/ws');
-    // Rewrite path: /ws-admin → /ws
-    req.url = req.url.replace(/^\/ws-admin/, '/ws');
-    wsProxy.ws(req, socket, head, { target: 'wss://platform-admin.vanex.site' });
-  } else if (url.startsWith('/ws-trade')) {
-    console.log('[WS Proxy] Upgrading /ws-trade → wss://platform-trade.vanex.site/ws');
-    req.url = req.url.replace(/^\/ws-trade/, '/ws');
-    wsProxy.ws(req, socket, head, { target: 'wss://platform-trade.vanex.site' });
+  if (req.url.startsWith('/ws-admin')) {
+    req.url = '/ws';
+    console.log('[WS-Proxy-Admin] ⬆ Upgrading to WebSocket → platform-admin.vanex.site');
+    wsAdminProxy.ws(req, socket, head);
+  } else if (req.url.startsWith('/ws-trade')) {
+    req.url = '/ws';
+    console.log('[WS-Proxy-Trade] ⬆ Upgrading to WebSocket → platform-trade.vanex.site');
+    wsTradeProxy.ws(req, socket, head);
+  } else {
+    socket.destroy();
   }
 });
 
