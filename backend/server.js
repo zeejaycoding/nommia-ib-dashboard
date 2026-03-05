@@ -3,35 +3,7 @@ const cors = require('cors');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const speakeasy = require('speakeasy');
-const httpProxy = require('http-proxy');
 require('dotenv').config();
-
-// ============= WEBSOCKET PROXY SETUP =============
-// Proxies deployed frontend WebSocket connections to vanex.site servers
-// (mirrors Vite dev-server proxy behaviour for production)
-const wsAdminProxy = httpProxy.createProxyServer({
-  target: 'wss://platform-admin.vanex.site',
-  ws: true,
-  secure: true,
-  changeOrigin: true
-});
-
-const wsTradeProxy = httpProxy.createProxyServer({
-  target: 'wss://platform-trade.vanex.site',
-  ws: true,
-  secure: true,
-  changeOrigin: true
-});
-
-wsAdminProxy.on('error', (err, req, socket) => {
-  console.error('[WS-Proxy-Admin] ❌ Error:', err.message);
-  if (socket && socket.writable) socket.end();
-});
-
-wsTradeProxy.on('error', (err, req, socket) => {
-  console.error('[WS-Proxy-Trade] ❌ Error:', err.message);
-  if (socket && socket.writable) socket.end();
-});
 
 // ============= EARLY STARTUP LOGGING =============
 console.log('\n========================================');
@@ -1418,23 +1390,6 @@ const server = app.listen(port, host, () => {
  // console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
   //console.log('[Server] Ready to accept requests');
   console.log('========================================\n');
-});
-
-// ============= WEBSOCKET UPGRADE HANDLER =============
-// Intercepts WebSocket upgrade requests and proxies them to the correct vanex.site server.
-// This mirrors the Vite dev-proxy so production deployments work the same as localhost.
-server.on('upgrade', (req, socket, head) => {
-  if (req.url.startsWith('/ws-admin')) {
-    req.url = '/ws';
-    console.log('[WS-Proxy-Admin] ⬆ Upgrading to WebSocket → platform-admin.vanex.site');
-    wsAdminProxy.ws(req, socket, head);
-  } else if (req.url.startsWith('/ws-trade')) {
-    req.url = '/ws';
-    console.log('[WS-Proxy-Trade] ⬆ Upgrading to WebSocket → platform-trade.vanex.site');
-    wsTradeProxy.ws(req, socket, head);
-  } else {
-    socket.destroy();
-  }
 });
 
 // Handle server errors
